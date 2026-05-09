@@ -15,6 +15,7 @@ final class VideoFrameProvider {
     private var videoOutput: AVPlayerItemVideoOutput?
     private weak var attachedPlayerItem: AVPlayerItem?
 
+    @MainActor
     func attach(to playerItem: AVPlayerItem) {
         detach()
 
@@ -26,6 +27,7 @@ final class VideoFrameProvider {
         attachedPlayerItem = playerItem
     }
 
+    @MainActor
     func detach() {
         if let videoOutput, let attachedPlayerItem {
             attachedPlayerItem.remove(videoOutput)
@@ -35,6 +37,7 @@ final class VideoFrameProvider {
         attachedPlayerItem = nil
     }
 
+    @MainActor
     func start() {
         stop()
 
@@ -47,6 +50,7 @@ final class VideoFrameProvider {
         self.timer = timer
     }
 
+    @MainActor
     func stop() {
         timer?.cancel()
         timer = nil

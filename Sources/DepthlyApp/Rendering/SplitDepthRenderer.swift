@@ -1,25 +1,26 @@
 import CoreGraphics
-import CoreImage
+@preconcurrency import CoreImage
+
+fileprivate func makeThresholdKernel() -> CIColorKernel {
+    guard let kernel = CIColorKernel(source: """
+    kernel vec4 thresholdMask(__sample s, float cutoff, float softness, float strength) {
+        float lower = max(0.0, cutoff - softness);
+        float upper = min(1.0, cutoff + softness);
+        float value = smoothstep(lower, upper, s.r);
+        value = pow(clamp(value, 0.0, 1.0), mix(1.6, 0.65, clamp(strength, 0.0, 1.0)));
+        return vec4(value, value, value, value);
+    }
+    """) else {
+        fatalError("Failed to build threshold kernel")
+    }
+    return kernel
+}
 
 final class SplitDepthRenderer: @unchecked Sendable {
     private let context = CIContext(options: [.useSoftwareRenderer: false])
     private var previousMask: CIImage?
     private var previousInputMask: CIImage?
-
-    private static let thresholdKernel: CIColorKernel = {
-        guard let kernel = CIColorKernel(source: """
-        kernel vec4 thresholdMask(__sample s, float cutoff, float softness, float strength) {
-            float lower = max(0.0, cutoff - softness);
-            float upper = min(1.0, cutoff + softness);
-            float value = smoothstep(lower, upper, s.r);
-            value = pow(clamp(value, 0.0, 1.0), mix(1.6, 0.65, clamp(strength, 0.0, 1.0)));
-            return vec4(value, value, value, value);
-        }
-        """) else {
-            fatalError("Failed to build threshold kernel")
-        }
-        return kernel
-    }()
+    private let thresholdKernel = makeThresholdKernel()
 
     func reset() {
         previousMask = nil
@@ -209,7 +210,7 @@ final class SplitDepthRenderer: @unchecked Sendable {
 
         let correctedMask = settings.invertDepthMask ? inverted(image: scaledMask, extent: extent) : scaledMask
 
-        let thresholded = Self.thresholdKernel.apply(
+        let thresholded = thresholdKernel.apply(
             extent: extent,
             arguments: [
                 correctedMask,
