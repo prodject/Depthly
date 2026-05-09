@@ -5,10 +5,15 @@ struct MainView: View {
     @ObservedObject var viewModel: PlayerViewModel
     @State private var scrubProgress: Double = 0
     @State private var isScrubbing = false
+    @State private var isSettingsPopoverPresented = false
+
+    private var hasVideoLoaded: Bool {
+        viewModel.videoSize != .zero
+    }
 
     var body: some View {
-        VStack(spacing: 18) {
-            header
+        ZStack {
+            backdrop
 
             VideoPlayerContainer(
                 player: viewModel.player,
@@ -17,12 +22,22 @@ struct MainView: View {
                 borderThickness: viewModel.effectSettings.borderThickness,
                 isEffectEnabled: viewModel.isEffectEnabled
             )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea()
 
-            controls
+            vignette
+
+            if !hasVideoLoaded {
+                emptyState
+            }
+
+            VStack(spacing: 0) {
+                topChrome
+                Spacer()
+                bottomChrome
+            }
+            .padding(20)
         }
-        .padding(20)
-        .background(background)
+        .background(WindowChromeConfigurator().frame(width: 0, height: 0))
         .onAppear {
             scrubProgress = viewModel.bindingProgress()
         }
@@ -35,54 +50,39 @@ struct MainView: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Depthly")
-                    .font(.system(size: 24, weight: .semibold, design: .rounded))
-                Text(viewModel.statusText)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+    private var topChrome: some View {
+        HStack(alignment: .top, spacing: 12) {
+            infoChip
 
-            Spacer()
+            Spacer(minLength: 12)
 
-            Button("Open Video") {
-                viewModel.openVideoFile()
+            HStack(spacing: 10) {
+                iconButton(title: "Open Video", systemImage: "folder.badge.plus") {
+                    viewModel.openVideoFile()
+                }
+                settingsBubble
             }
-            .keyboardShortcut("o", modifiers: [.command])
         }
     }
 
-    private var controls: some View {
-        VStack(spacing: 16) {
-            VStack(spacing: 8) {
-                Slider(
-                    value: Binding(
-                        get: { scrubProgress },
-                        set: { scrubProgress = $0 }
-                    ),
-                    in: 0...1,
-                    onEditingChanged: { editing in
-                        isScrubbing = editing
-                        if !editing {
-                            viewModel.seek(to: scrubProgress)
-                        }
+    private var bottomChrome: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Slider(
+                value: Binding(
+                    get: { scrubProgress },
+                    set: { scrubProgress = $0 }
+                ),
+                in: 0...1,
+                onEditingChanged: { editing in
+                    isScrubbing = editing
+                    if !editing {
+                        viewModel.seek(to: scrubProgress)
                     }
-                )
-
-                HStack {
-                    Text(formatTime(viewModel.currentTime))
-                    Spacer()
-                    Text(formatTime(viewModel.duration))
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-            }
+            )
 
             HStack(spacing: 14) {
-                Button(viewModel.isPlaying ? "Pause" : "Play") {
+                glassButton(title: viewModel.isPlaying ? "Pause" : "Play", systemImage: viewModel.isPlaying ? "pause.fill" : "play.fill") {
                     viewModel.togglePlayPause()
                 }
 
@@ -90,40 +90,203 @@ struct MainView: View {
                     Text("Volume")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Slider(value: Binding(
-                        get: { viewModel.volume },
-                        set: { viewModel.setVolume($0) }
-                    ), in: 0...1)
-                    .frame(width: 200)
+                    Slider(
+                        value: Binding(
+                            get: { viewModel.volume },
+                            set: { viewModel.setVolume($0) }
+                        ),
+                        in: 0...1
+                    )
+                    .frame(width: 220)
                 }
 
                 Spacer()
-            }
 
-            EffectControlsView(
-                isEffectEnabled: $viewModel.isEffectEnabled,
-                settings: $viewModel.effectSettings,
-                availableDepthModels: viewModel.availableDepthModels,
-                selectedDepthModelID: viewModel.selectedDepthModelID,
-                depthModelStatus: viewModel.depthModelStatus,
-                isLoadingDepthModel: viewModel.isLoadingDepthModel,
-                onSelectDepthModel: { id in
-                    viewModel.selectDepthModel(id: id)
+                HStack(spacing: 8) {
+                    Text(formatTime(viewModel.currentTime))
+                    Text("·")
+                        .foregroundStyle(.secondary)
+                    Text(formatTime(viewModel.duration))
                 }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            }
+        }
+        .padding(16)
+        .background(glassSurface(cornerRadius: 24))
+    }
+
+    private var infoChip: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Depthly")
+                .font(.system(size: 24, weight: .semibold, design: .rounded))
+            Text(viewModel.statusText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(glassSurface(cornerRadius: 22))
+    }
+
+    private var settingsBubble: some View {
+        Button {
+            isSettingsPopoverPresented.toggle()
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 42, height: 42)
+        }
+        .buttonStyle(.plain)
+        .background(
+            Circle()
+                .fill(.ultraThinMaterial)
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.20), lineWidth: 1))
+                .shadow(color: .black.opacity(0.25), radius: 10, y: 6)
+        )
+        .popover(isPresented: $isSettingsPopoverPresented, arrowEdge: .top) {
+            ScrollView {
+                EffectControlsView(
+                    isEffectEnabled: $viewModel.isEffectEnabled,
+                    settings: $viewModel.effectSettings,
+                    availableDepthModels: viewModel.availableDepthModels,
+                    selectedDepthModelID: viewModel.selectedDepthModelID,
+                    depthModelStatus: viewModel.depthModelStatus,
+                    isLoadingDepthModel: viewModel.isLoadingDepthModel,
+                    onSelectDepthModel: { id in
+                        viewModel.selectDepthModel(id: id)
+                    }
+                )
+                .padding(18)
+            }
+            .frame(width: 380, height: 520)
+            .background(
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.14),
+                        Color.white.opacity(0.06)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .background(.ultraThinMaterial)
             )
         }
     }
 
-    private var background: some View {
+    private func iconButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.titleAndIcon)
+                .font(.system(size: 13, weight: .medium))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+        }
+        .buttonStyle(.plain)
+        .background(glassSurface(cornerRadius: 18))
+    }
+
+    private func glassButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.titleAndIcon)
+                .font(.system(size: 13, weight: .medium))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+        }
+        .buttonStyle(.plain)
+        .background(glassSurface(cornerRadius: 18))
+    }
+
+    private func glassSurface(cornerRadius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(.ultraThinMaterial)
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.26), radius: 16, y: 8)
+    }
+
+    private var backdrop: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.04, green: 0.05, blue: 0.08),
+                    Color(red: 0.08, green: 0.09, blue: 0.12),
+                    Color(red: 0.03, green: 0.03, blue: 0.04)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            RadialGradient(
+                colors: [
+                    Color.white.opacity(0.08),
+                    Color.clear
+                ],
+                center: .topTrailing,
+                startRadius: 20,
+                endRadius: 460
+            )
+
+            RadialGradient(
+                colors: [
+                    Color(red: 0.25, green: 0.55, blue: 0.9).opacity(0.18),
+                    Color.clear
+                ],
+                center: .bottomLeading,
+                startRadius: 20,
+                endRadius: 520
+            )
+        }
+        .ignoresSafeArea()
+    }
+
+    private var vignette: some View {
         LinearGradient(
             colors: [
-                Color(nsColor: .windowBackgroundColor),
-                Color(red: 0.08, green: 0.09, blue: 0.11)
+                Color.black.opacity(0.28),
+                Color.clear,
+                Color.black.opacity(0.30)
             ],
             startPoint: .top,
             endPoint: .bottom
         )
         .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "film.stack")
+                .font(.system(size: 36, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.8))
+
+            Text("Open a local video")
+                .font(.system(size: 20, weight: .semibold, design: .rounded))
+
+            Text("The player stays fully local. Settings live in the floating bubble.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 340)
+
+            Button {
+                viewModel.openVideoFile()
+            } label: {
+                Label("Choose Video", systemImage: "folder.badge.plus")
+                    .font(.system(size: 14, weight: .semibold))
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+            }
+            .buttonStyle(.plain)
+            .background(glassSurface(cornerRadius: 18))
+        }
+        .padding(28)
+        .background(glassSurface(cornerRadius: 30))
     }
 
     private func formatTime(_ seconds: Double) -> String {
