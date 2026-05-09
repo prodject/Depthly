@@ -92,7 +92,9 @@ enum DepthModelCatalog {
 
             for case let url as URL in enumerator {
                 let ext = url.pathExtension.lowercased()
-                if ext == "mlpackage" || ext == "mlmodelc" || ext == "mlmodel" {
+                if ext == "mlpackage" || ext == "mlmodelc" {
+                    urls.append(url)
+                } else if ext == "mlmodel", !isNestedModelFile(url) {
                     urls.append(url)
                 }
             }
@@ -110,5 +112,10 @@ enum DepthModelCatalog {
         return name
             .replacingOccurrences(of: "_", with: " ")
             .replacingOccurrences(of: "-", with: " ")
+    }
+
+    private static func isNestedModelFile(_ url: URL) -> Bool {
+        let path = url.path.lowercased()
+        return path.contains(".mlpackage/") || path.contains(".mlmodelc/")
     }
 }
