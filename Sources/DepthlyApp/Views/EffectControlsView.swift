@@ -34,7 +34,7 @@ struct EffectControlsView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("Foreground model")
+                    Text("Foreground extractor")
                     Spacer()
                     Text(isLoadingForegroundModel ? "Loading..." : foregroundModelStatus)
                         .foregroundStyle(.secondary)
@@ -42,7 +42,7 @@ struct EffectControlsView: View {
                 }
 
                 Picker(
-                    "Foreground model",
+                    "Foreground extractor",
                     selection: Binding(
                         get: { selectedForegroundModelID },
                         set: { onSelectForegroundModel($0) }
@@ -136,7 +136,7 @@ struct EffectControlsView: View {
             )
 
             SliderRow(
-                title: "Foreground displacement",
+                title: "Foreground lift",
                 value: Binding(
                     get: { Double(settings.foregroundDisplacement) },
                     set: { settings.foregroundDisplacement = CGFloat($0) }

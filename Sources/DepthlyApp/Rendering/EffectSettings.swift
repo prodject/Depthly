@@ -6,7 +6,7 @@ struct EffectSettings: Equatable, Sendable {
     var edgeSoftness: CGFloat = 12
     var effectStrength: Double = 1.0
     var temporalSmoothing: Double = 0.30
-    var foregroundDisplacement: CGFloat = 0
+    var foregroundDisplacement: CGFloat = 18
     var invertDepthMask: Bool = false
     var showMaskPreview: Bool = false
 

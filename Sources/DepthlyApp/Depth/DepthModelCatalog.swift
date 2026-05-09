@@ -3,6 +3,8 @@ import Foundation
 struct DepthModelOption: Identifiable, Hashable, Sendable {
     enum Kind: String, Hashable, Sendable {
         case mock
+        case visionHybrid
+        case visionObjectSaliency
         case visionPersonSegmentation
         case coreML
     }
@@ -13,8 +15,22 @@ struct DepthModelOption: Identifiable, Hashable, Sendable {
     let kind: Kind
 
     var isMock: Bool { kind == .mock }
-    var isBuiltInVision: Bool { kind == .visionPersonSegmentation }
+    var isBuiltInVision: Bool { kind == .visionHybrid || kind == .visionObjectSaliency || kind == .visionPersonSegmentation }
     var isCoreML: Bool { kind == .coreML }
+
+    static let visionHybrid = DepthModelOption(
+        id: "vision.hybrid",
+        displayName: "Vision Hybrid (saliency + people)",
+        fileURL: nil,
+        kind: .visionHybrid
+    )
+
+    static let visionObjectSaliency = DepthModelOption(
+        id: "vision.object.saliency",
+        displayName: "Vision Object Saliency",
+        fileURL: nil,
+        kind: .visionObjectSaliency
+    )
 
     static let mock = DepthModelOption(
         id: "mock",
@@ -34,6 +50,8 @@ struct DepthModelOption: Identifiable, Hashable, Sendable {
 enum DepthModelCatalog {
     static func discoverModels() -> [DepthModelOption] {
         var options: [DepthModelOption] = [
+            DepthModelOption.visionHybrid,
+            DepthModelOption.visionObjectSaliency,
             DepthModelOption.visionPersonSegmentation,
             DepthModelOption.mock
         ]

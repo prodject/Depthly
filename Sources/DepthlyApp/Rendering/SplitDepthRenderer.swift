@@ -73,20 +73,18 @@ final class SplitDepthRenderer: @unchecked Sendable {
                 kCIInputMaskImageKey: stripeMask
             ])
 
-        let horizontalScale = 1.0 + (0.004 * settings.effectStrength)
-        let transform = CGAffineTransform(translationX: canvasExtent.midX, y: canvasExtent.midY)
-            .scaledBy(x: horizontalScale, y: 1.0)
-            .translatedBy(x: -extent.midX, y: -extent.midY)
-
-        let transformedCutoutMask = cutoutMask
-            .transformed(by: transform)
-            .cropped(to: extent)
-
-        let overlay = transparentBackground.applyingFilter("CIBlendWithMask", parameters: [
-            kCIInputBackgroundImageKey: bars,
-            kCIInputMaskImageKey: transformedCutoutMask
+        let foregroundLayer = frameImage.applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: transparentBackground,
+            kCIInputMaskImageKey: cutoutMask
         ])
 
+        let measuredShift = measuredForegroundShift(from: mask, extent: extent, settings: settings)
+        let displacement = measuredShift + (settings.foregroundDisplacement * settings.effectStrength)
+        let translatedForeground = foregroundLayer
+            .transformed(by: CGAffineTransform(translationX: displacement, y: 0))
+            .cropped(to: canvasExtent)
+
+        let overlay = translatedForeground.composited(over: bars)
         return context.createCGImage(overlay, from: canvasExtent)
     }
 

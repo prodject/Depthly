@@ -24,8 +24,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var videoSize: CGSize = .zero
     @Published private(set) var overlayRevision: Int = 0
     @Published var availableForegroundModels: [DepthModelOption] = []
-    @Published var selectedForegroundModelID: String = DepthModelOption.visionPersonSegmentation.id
-    @Published var foregroundModelStatus: String = "Vision Person Segmentation"
+    @Published var selectedForegroundModelID: String = DepthModelOption.visionHybrid.id
+    @Published var foregroundModelStatus: String = "Vision Hybrid (saliency + people)"
     @Published var isLoadingForegroundModel = false
     @Published private(set) var isForegroundModelReady = false
     @Published var isBufferingDepth = false
@@ -54,11 +54,11 @@ final class PlayerViewModel: ObservableObject {
     init(foregroundMaskEstimator: (any ForegroundMaskEstimating)? = nil) {
         availableForegroundModels = DepthModelCatalog.discoverModels()
         let preferredModelID = UserDefaults.standard.string(forKey: Self.selectedForegroundModelDefaultsKey)
-            ?? DepthModelOption.visionPersonSegmentation.id
+            ?? DepthModelOption.visionHybrid.id
         if availableForegroundModels.contains(where: { $0.id == preferredModelID }) {
             selectedForegroundModelID = preferredModelID
         } else {
-            selectedForegroundModelID = DepthModelOption.visionPersonSegmentation.id
+            selectedForegroundModelID = DepthModelOption.visionHybrid.id
         }
 
         if let foregroundMaskEstimator {
@@ -435,24 +435,25 @@ final class PlayerViewModel: ObservableObject {
         depthModelLoadGeneration &+= 1
         let generation = depthModelLoadGeneration
 
-        let selected = availableForegroundModels.first(where: { $0.id == selectedForegroundModelID }) ?? .visionPersonSegmentation
+        let selected = availableForegroundModels.first(where: { $0.id == selectedForegroundModelID }) ?? .visionHybrid
         if !force, didLoadDepthModelOnce, selected.id == selectedForegroundModelID {
             return
         }
 
-        if selected.isMock {
+        switch selected.kind {
+        case .mock:
             foregroundMaskEstimator = MockForegroundMaskEstimator()
-            foregroundModelStatus = selected.displayName
-            isLoadingForegroundModel = false
-            isForegroundModelReady = true
-            loadedForegroundModelID = selected.id
-            didLoadDepthModelOnce = true
-            scheduleDepthPreparationIfPossible()
-            return
+        case .visionPersonSegmentation:
+            foregroundMaskEstimator = VisionForegroundMaskEstimator()
+        case .visionObjectSaliency:
+            foregroundMaskEstimator = VisionSaliencyForegroundMaskEstimator()
+        case .visionHybrid:
+            foregroundMaskEstimator = HybridForegroundMaskEstimator()
+        case .coreML:
+            break
         }
 
-        if selected.isBuiltInVision {
-            foregroundMaskEstimator = VisionForegroundMaskEstimator()
+        if selected.kind == .mock || selected.kind == .visionPersonSegmentation || selected.kind == .visionObjectSaliency || selected.kind == .visionHybrid {
             foregroundModelStatus = selected.displayName
             isLoadingForegroundModel = false
             isForegroundModelReady = true

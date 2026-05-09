@@ -13,13 +13,26 @@ final class VideoFrameProvider {
     private let queue = DispatchQueue(label: "Depthly.VideoFrameProvider", qos: .userInteractive)
     private var timer: DispatchSourceTimer?
     private var videoOutput: AVPlayerItemVideoOutput?
+    private weak var attachedPlayerItem: AVPlayerItem?
 
     func attach(to playerItem: AVPlayerItem) {
+        detach()
+
         let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ])
         playerItem.add(output)
         videoOutput = output
+        attachedPlayerItem = playerItem
+    }
+
+    func detach() {
+        if let videoOutput, let attachedPlayerItem {
+            attachedPlayerItem.remove(videoOutput)
+        }
+
+        videoOutput = nil
+        attachedPlayerItem = nil
     }
 
     func start() {
@@ -37,6 +50,7 @@ final class VideoFrameProvider {
     func stop() {
         timer?.cancel()
         timer = nil
+        detach()
     }
 
     private func poll() {

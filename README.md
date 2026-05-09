@@ -6,8 +6,8 @@ Local macOS split-depth video player MVP.
 
 - Opens a local video file via system picker.
 - Plays the video locally with `AVPlayer`.
-- Uses Metal to present the video and split-depth overlay.
-- Runs depth estimation locally.
+- Uses Core Image to present the video and split-depth overlay.
+- Runs local foreground estimation with Vision saliency + person segmentation by default.
 - Compiles without Xcode as a Swift Package Manager project.
 
 ## Build
@@ -77,18 +77,18 @@ DEPTHLY_MODEL_PATH=/absolute/path/to/DepthAnythingV2SmallF16.mlpackage swift bui
 
 ## MVP behavior
 
-- The app uses `MockDepthEstimator` by default.
+- The app uses a local Vision hybrid foreground estimator by default.
 - The split-depth overlay is rendered with Core Image.
 - Mask refresh is throttled so playback stays responsive.
-- If no depth map is available, the last valid mask is reused.
+- If no mask is available, the last valid mask is reused.
 
 ## Core ML integration point
 
 The app currently falls back to mock depth. To plug in a real model:
 
 1. Add a compiled `.mlmodelc` or raw `.mlmodel` to the bundle.
-2. Update `PlayerViewModel.makeDefaultDepthEstimator()`.
-3. If your model output is not a pixel buffer named `depth`, adjust `CoreMLDepthEstimator`.
+2. Select the Core ML option in the in-app picker.
+3. If your model output is not a pixel buffer named `predicted_depth`, adjust `CoreMLForegroundMaskEstimator`.
 
 ## Files
 

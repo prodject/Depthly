@@ -122,3 +122,5 @@ final class CoreMLForegroundMaskEstimator: ForegroundMaskEstimating, @unchecked 
             ?? model.modelDescription.outputDescriptionsByName.keys.first
     }
 }
+
+typealias CoreMLDepthEstimator = CoreMLForegroundMaskEstimator
