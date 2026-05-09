@@ -24,8 +24,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var videoSize: CGSize = .zero
     @Published private(set) var overlayRevision: Int = 0
     @Published var availableForegroundModels: [DepthModelOption] = []
-    @Published var selectedForegroundModelID: String = DepthModelOption.mock.id
-    @Published var foregroundModelStatus: String = "Mock foreground mask"
+    @Published var selectedForegroundModelID: String = DepthModelOption.visionPersonSegmentation.id
+    @Published var foregroundModelStatus: String = "Vision Person Segmentation"
     @Published var isLoadingForegroundModel = false
     @Published private(set) var isForegroundModelReady = false
     @Published var isBufferingDepth = false
@@ -36,7 +36,7 @@ final class PlayerViewModel: ObservableObject {
     private let frameProvider = VideoFrameProvider()
     private let renderer = SplitDepthRenderer()
     private let outputRouting = PlaybackOutputRouting()
-    private var foregroundMaskEstimator: any ForegroundMaskEstimating = MockForegroundMaskEstimator()
+    private var foregroundMaskEstimator: any ForegroundMaskEstimating = VisionForegroundMaskEstimator()
     private var currentFrameBuffer: CVPixelBuffer?
     private var currentVideoURL: URL?
     private var isProcessingFrame = false
@@ -53,8 +53,13 @@ final class PlayerViewModel: ObservableObject {
 
     init(foregroundMaskEstimator: (any ForegroundMaskEstimating)? = nil) {
         availableForegroundModels = DepthModelCatalog.discoverModels()
-        selectedForegroundModelID = UserDefaults.standard.string(forKey: Self.selectedForegroundModelDefaultsKey)
-            ?? DepthModelOption.mock.id
+        let preferredModelID = UserDefaults.standard.string(forKey: Self.selectedForegroundModelDefaultsKey)
+            ?? DepthModelOption.visionPersonSegmentation.id
+        if availableForegroundModels.contains(where: { $0.id == preferredModelID }) {
+            selectedForegroundModelID = preferredModelID
+        } else {
+            selectedForegroundModelID = DepthModelOption.visionPersonSegmentation.id
+        }
 
         if let foregroundMaskEstimator {
             self.foregroundMaskEstimator = foregroundMaskEstimator
@@ -430,12 +435,12 @@ final class PlayerViewModel: ObservableObject {
         depthModelLoadGeneration &+= 1
         let generation = depthModelLoadGeneration
 
-        let selected = availableForegroundModels.first(where: { $0.id == selectedForegroundModelID }) ?? .mock
+        let selected = availableForegroundModels.first(where: { $0.id == selectedForegroundModelID }) ?? .visionPersonSegmentation
         if !force, didLoadDepthModelOnce, selected.id == selectedForegroundModelID {
             return
         }
 
-        guard !selected.isMock, let fileURL = selected.fileURL else {
+        if selected.isMock {
             foregroundMaskEstimator = MockForegroundMaskEstimator()
             foregroundModelStatus = selected.displayName
             isLoadingForegroundModel = false
@@ -443,6 +448,31 @@ final class PlayerViewModel: ObservableObject {
             loadedForegroundModelID = selected.id
             didLoadDepthModelOnce = true
             scheduleDepthPreparationIfPossible()
+            return
+        }
+
+        if selected.isBuiltInVision {
+            foregroundMaskEstimator = VisionForegroundMaskEstimator()
+            foregroundModelStatus = selected.displayName
+            isLoadingForegroundModel = false
+            isForegroundModelReady = true
+            loadedForegroundModelID = selected.id
+            effectSettings.invertDepthMask = false
+            didLoadDepthModelOnce = true
+            scheduleDepthPreparationIfPossible()
+            return
+        }
+
+        guard let fileURL = selected.fileURL else {
+            foregroundMaskEstimator = MockForegroundMaskEstimator()
+            foregroundModelStatus = "Missing model source"
+            isLoadingForegroundModel = false
+            isForegroundModelReady = false
+            loadedForegroundModelID = nil
+            pendingAutoBuffer = false
+            bufferStatus = "Model source missing"
+            statusText = "Foreground model source is unavailable."
+            didLoadDepthModelOnce = true
             return
         }
 
