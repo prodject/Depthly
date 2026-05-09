@@ -166,9 +166,8 @@ final class PlayerViewModel: ObservableObject {
 
         let estimator = foregroundMaskEstimator
         let defaultSampleInterval = defaultBufferedSampleInterval
-        let selectedKind = availableForegroundModels.first(where: { $0.id == selectedForegroundModelID })?.kind ?? .mock
 
-        bufferTask = Task.detached(priority: .utility) { [videoURL, estimator, defaultSampleInterval, selectedKind] in
+        bufferTask = Task.detached(priority: .utility) { [videoURL, estimator, defaultSampleInterval] in
             do {
                 let asset = AVURLAsset(url: videoURL)
                 let duration = try await asset.load(.duration)
@@ -181,10 +180,8 @@ final class PlayerViewModel: ObservableObject {
                 let nominalFrameRate = try await videoTrack.load(.nominalFrameRate)
                 let sampleInterval = Self.bufferedSamplingInterval(
                     nominalFrameRate: Double(nominalFrameRate),
-                    kind: selectedKind,
                     fallback: defaultSampleInterval
                 )
-                let sampleEveryFrame = sampleInterval <= 0
 
                 let reader = try AVAssetReader(asset: asset)
                 let outputSettings: [String: Any] = [
@@ -213,10 +210,8 @@ final class PlayerViewModel: ObservableObject {
                     let sampleTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
                     let seconds = sampleTime.seconds
                     guard seconds.isFinite else { continue }
-                    if !sampleEveryFrame {
-                        guard seconds + 0.0001 >= nextCaptureTime else { continue }
-                        nextCaptureTime = seconds + sampleInterval
-                    }
+                    guard seconds + 0.0001 >= nextCaptureTime else { continue }
+                    nextCaptureTime = seconds + sampleInterval
 
                     if let mask = try? await estimator.estimateForegroundMask(for: imageBuffer) {
                         buffered.append(BufferedForegroundSample(time: sampleTime, mask: mask))
@@ -522,13 +517,8 @@ final class PlayerViewModel: ObservableObject {
 
     nonisolated private static func bufferedSamplingInterval(
         nominalFrameRate nominalFPS: Double,
-        kind: DepthModelOption.Kind,
         fallback: TimeInterval
     ) -> TimeInterval {
-        if kind == .visionPersonSegmentation {
-            return 0
-        }
-
         guard nominalFPS.isFinite, nominalFPS > 0 else { return fallback }
 
         let targetFPS = min(max(nominalFPS, 12.0), 24.0)
