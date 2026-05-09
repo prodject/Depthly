@@ -58,10 +58,10 @@ final class SplitDepthRenderer: @unchecked Sendable {
         let stripeMask = verticalStripeMask(extent: extent, settings: settings)
         let cutoutMask = mask
             .applyingFilter("CIMorphologyMaximum", parameters: [
-                kCIInputRadiusKey: max(1.0, settings.borderThickness * 0.10)
+                kCIInputRadiusKey: max(1.0, settings.borderThickness * 0.05)
             ])
             .applyingFilter("CIGaussianBlur", parameters: [
-                kCIInputRadiusKey: max(0.75, settings.edgeSoftness * 0.22)
+                kCIInputRadiusKey: max(0.5, settings.edgeSoftness * 0.12)
             ])
             .cropped(to: extent)
 
@@ -73,12 +73,10 @@ final class SplitDepthRenderer: @unchecked Sendable {
                 kCIInputMaskImageKey: stripeMask
             ])
 
-        let foregroundShift = measuredForegroundShift(from: mask, extent: extent, settings: settings)
-        let horizontalScale = 1.0 + (0.018 * settings.effectStrength)
-        let horizontalPush = foregroundShift + max(settings.foregroundDisplacement, 0) * settings.effectStrength * 0.08
+        let horizontalScale = 1.0 + (0.004 * settings.effectStrength)
         let transform = CGAffineTransform(translationX: canvasExtent.midX, y: canvasExtent.midY)
             .scaledBy(x: horizontalScale, y: 1.0)
-            .translatedBy(x: -extent.midX + horizontalPush, y: -extent.midY)
+            .translatedBy(x: -extent.midX, y: -extent.midY)
 
         let transformedCutoutMask = cutoutMask
             .transformed(by: transform)
@@ -206,15 +204,15 @@ final class SplitDepthRenderer: @unchecked Sendable {
         ) ?? correctedMask
 
         let eroded = thresholded.applyingFilter("CIMorphologyMinimum", parameters: [
-            kCIInputRadiusKey: max(1.0, settings.edgeSoftness / 10.0)
+            kCIInputRadiusKey: max(1.0, settings.edgeSoftness / 7.0)
         ])
 
         let expanded = eroded
             .applyingFilter("CIMorphologyMaximum", parameters: [
-                kCIInputRadiusKey: max(1.0, settings.edgeSoftness / 3.5)
+                kCIInputRadiusKey: max(1.0, settings.edgeSoftness / 5.5)
             ])
             .applyingFilter("CIGaussianBlur", parameters: [
-                kCIInputRadiusKey: max(0.5, settings.edgeSoftness * 0.55)
+                kCIInputRadiusKey: max(0.5, settings.edgeSoftness * 0.30)
             ])
             .cropped(to: extent)
 
