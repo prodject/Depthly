@@ -15,12 +15,13 @@ struct MainView: View {
         ZStack {
             backdrop
 
-            AVPlayerViewRepresentable(player: viewModel.player)
-                .opacity(0.001)
-                .allowsHitTesting(false)
-                .ignoresSafeArea()
-
-            MetalVideoSurface(viewModel: viewModel)
+            VideoPlayerContainer(
+                player: viewModel.player,
+                overlayImage: viewModel.overlayImage,
+                videoSize: viewModel.videoSize,
+                borderThickness: viewModel.effectSettings.borderThickness,
+                isEffectEnabled: viewModel.isEffectEnabled
+            )
             .ignoresSafeArea()
 
             vignette
