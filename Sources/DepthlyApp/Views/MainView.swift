@@ -161,10 +161,6 @@ struct MainView: View {
                 EffectControlsView(
                     isEffectEnabled: $viewModel.isEffectEnabled,
                     settings: $viewModel.effectSettings,
-                    processingMode: Binding(
-                        get: { viewModel.processingMode },
-                        set: { viewModel.setProcessingMode($0) }
-                    ),
                     showMaskPreview: Binding(
                         get: { viewModel.effectSettings.showMaskPreview },
                         set: { viewModel.effectSettings.showMaskPreview = $0 }

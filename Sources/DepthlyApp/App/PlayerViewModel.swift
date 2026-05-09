@@ -6,19 +6,10 @@ import SwiftUI
 
 @MainActor
 final class PlayerViewModel: ObservableObject {
-    enum ProcessingMode: String, CaseIterable, Identifiable, Sendable {
-        case live = "Live"
-        case auto = "Auto"
-        case buffered = "Buffered"
-
-        var id: String { rawValue }
-    }
-
     @Published var player: AVPlayer = AVPlayer()
     @Published var overlayImage: CGImage?
     @Published var isEffectEnabled = true
     @Published var effectSettings = EffectSettings.default
-    @Published var processingMode: ProcessingMode = .auto
     @Published var currentTime: Double = 0
     @Published var duration: Double = 0
     @Published var volume: Double = 1
@@ -49,8 +40,6 @@ final class PlayerViewModel: ObservableObject {
     private var depthModelLoadGeneration: Int = 0
     private var timeObserverToken: Any?
     private var lastDepthMap: CIImage?
-    private var lastInferenceDate: Date = .distantPast
-    private let inferenceInterval: TimeInterval = 0.12
     private let bufferedSampleInterval: TimeInterval = 0.25
     private var bufferedDepthSamples: [BufferedDepthSample] = []
     private var loadedDepthModelID: String?
@@ -288,22 +277,6 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    func setProcessingMode(_ mode: ProcessingMode) {
-        processingMode = mode
-        if mode == .live {
-            bufferStatus = "Live mode selected"
-        } else if mode == .buffered {
-            bufferStatus = isBufferedDepthReady ? "Buffered playback ready" : "Buffered mode selected"
-        } else {
-            bufferStatus = isBufferedDepthReady ? "Auto mode using buffer" : "Auto mode using live inference"
-        }
-
-        if currentVideoURL != nil {
-            pendingAutoBuffer = mode != .live
-            scheduleDepthPreparationIfPossible()
-        }
-    }
-
     func bindingProgress() -> Double {
         guard duration > 0 else { return 0 }
         return currentTime / duration
@@ -321,45 +294,15 @@ final class PlayerViewModel: ObservableObject {
     }
 
     var activeProcessingStatusText: String {
-        let mode: String
-        switch processingMode {
-        case .live:
-            mode = "Live"
-        case .auto:
-            mode = isBufferedDepthReady ? "Auto (buffered)" : "Auto (live)"
-        case .buffered:
-            mode = "Buffered"
-        }
-
         let modelName = depthModelStatus
-        let bufferName: String
-        switch processingMode {
-        case .live:
-            bufferName = "buffer bypassed"
-        case .auto:
-            bufferName = isBufferedDepthReady ? "buffer ready" : "no buffer"
-        case .buffered:
-            bufferName = isBufferedDepthReady ? "buffer active" : "buffer missing"
-        }
-
-        return "\(mode) · \(modelName) · \(bufferName)"
+        let bufferName = isBufferedDepthReady ? "buffer ready" : (isBufferingDepth ? "buffering" : "buffer missing")
+        return "Buffered · \(modelName) · \(bufferName)"
     }
 
     var canStartPlayback: Bool {
         guard currentVideoURL != nil else { return false }
         guard !isLoadingDepthModel, !isBufferingDepth else { return false }
-        guard !isEffectEnabled || isDepthModelReady else { return false }
-
-        if !isEffectEnabled {
-            return true
-        }
-
-        switch processingMode {
-        case .live:
-            return isDepthModelReady
-        case .auto, .buffered:
-            return isBufferedDepthReady
-        }
+        return !isEffectEnabled || (isDepthModelReady && isBufferedDepthReady)
     }
 
     var playbackLockReason: String {
@@ -372,7 +315,7 @@ final class PlayerViewModel: ObservableObject {
         if isEffectEnabled && !isDepthModelReady {
             return "Depth model is not ready."
         }
-        if isEffectEnabled && processingMode != .live && !isBufferedDepthReady {
+        if isEffectEnabled && !isBufferedDepthReady {
             return "Depth buffer is not ready."
         }
         return "Playback ready."
@@ -392,24 +335,14 @@ final class PlayerViewModel: ObservableObject {
 
         let frameCopy = sample.pixelBuffer
         let settings = effectSettings
-        let depthEstimator = depthEstimator
         let renderer = renderer
         let cachedDepth = lastDepthMap
-        let bufferedDepth: CIImage?
-        switch processingMode {
-        case .live:
-            bufferedDepth = nil
-        case .auto, .buffered:
-            bufferedDepth = isBufferedDepthReady ? bufferedDepthMap(near: sample.time) : nil
-        }
-        let shouldRefreshDepth = bufferedDepth == nil && Date().timeIntervalSince(lastInferenceDate) >= inferenceInterval
+        let bufferedDepth = isBufferedDepthReady ? bufferedDepthMap(near: sample.time) : nil
 
         let result = await Task.detached(priority: .userInitiated) {
             var depth = cachedDepth
             if let bufferedDepth {
                 depth = bufferedDepth
-            } else if shouldRefreshDepth {
-                depth = try? await depthEstimator.estimateDepthMap(for: frameCopy)
             }
 
             let image = renderer.renderOverlay(frame: frameCopy, depthMap: depth, settings: settings)
@@ -418,7 +351,6 @@ final class PlayerViewModel: ObservableObject {
 
         overlayImage = result.0
         lastDepthMap = result.1
-        lastInferenceDate = .now
         overlayRevision &+= 1
         isProcessingFrame = false
     }
@@ -546,7 +478,6 @@ final class PlayerViewModel: ObservableObject {
         guard !isLoadingDepthModel else { return false }
         guard isDepthModelReady else { return false }
         guard loadedDepthModelID == selectedDepthModelID else { return false }
-        guard processingMode != .live else { return false }
         return true
     }
 
@@ -556,17 +487,6 @@ final class PlayerViewModel: ObservableObject {
 
     private func scheduleDepthPreparationIfPossible() {
         guard currentVideoURL != nil else { return }
-
-        if processingMode == .live {
-            pendingAutoBuffer = false
-            if isLoadingDepthModel {
-                statusText = "Loading depth model..."
-            } else if isDepthModelReady {
-                statusText = "Depth model ready. Playback ready."
-            }
-            return
-        }
-
         guard pendingAutoBuffer else { return }
 
         if canPrepareDepthBufferNow {
