@@ -14,8 +14,28 @@ Local macOS split-depth video player MVP.
 
 Requires macOS with Swift toolchain installed.
 
+Command to build:
+
 ```bash
 swift build
+```
+
+If you want a release build:
+
+```bash
+swift build -c release
+```
+
+If you want to run the app from SwiftPM after building:
+
+```bash
+swift run DepthlyApp
+```
+
+If you need the binary path after a debug build:
+
+```bash
+.build/debug/DepthlyApp
 ```
 
 If you add a compiled Core ML model, place it in the app bundle or wire it into `PlayerViewModel.makeDefaultDepthEstimator()`.
