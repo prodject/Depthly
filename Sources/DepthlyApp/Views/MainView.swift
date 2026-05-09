@@ -125,6 +125,10 @@ struct MainView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+            Text(viewModel.activeProcessingStatusText)
+                .font(.caption2)
+                .foregroundStyle(.secondary.opacity(0.9))
+                .lineLimit(1)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -151,6 +155,10 @@ struct MainView: View {
                 EffectControlsView(
                     isEffectEnabled: $viewModel.isEffectEnabled,
                     settings: $viewModel.effectSettings,
+                    processingMode: Binding(
+                        get: { viewModel.processingMode },
+                        set: { viewModel.setProcessingMode($0) }
+                    ),
                     availableDepthModels: viewModel.availableDepthModels,
                     selectedDepthModelID: viewModel.selectedDepthModelID,
                     depthModelStatus: viewModel.depthModelStatus,

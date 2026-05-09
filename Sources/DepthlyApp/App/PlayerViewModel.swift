@@ -6,10 +6,19 @@ import SwiftUI
 
 @MainActor
 final class PlayerViewModel: ObservableObject {
+    enum ProcessingMode: String, CaseIterable, Identifiable, Sendable {
+        case live = "Live"
+        case auto = "Auto"
+        case buffered = "Buffered"
+
+        var id: String { rawValue }
+    }
+
     @Published var player: AVPlayer = AVPlayer()
     @Published var overlayImage: CGImage?
     @Published var isEffectEnabled = true
     @Published var effectSettings = EffectSettings.default
+    @Published var processingMode: ProcessingMode = .auto
     @Published var currentTime: Double = 0
     @Published var duration: Double = 0
     @Published var volume: Double = 1
@@ -253,6 +262,17 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
+    func setProcessingMode(_ mode: ProcessingMode) {
+        processingMode = mode
+        if mode == .live {
+            bufferStatus = "Live mode selected"
+        } else if mode == .buffered {
+            bufferStatus = isBufferedDepthReady ? "Buffered playback ready" : "Buffered mode selected"
+        } else {
+            bufferStatus = isBufferedDepthReady ? "Auto mode using buffer" : "Auto mode using live inference"
+        }
+    }
+
     func bindingProgress() -> Double {
         guard duration > 0 else { return 0 }
         return currentTime / duration
@@ -267,6 +287,31 @@ final class PlayerViewModel: ObservableObject {
             isEffectEnabled: isEffectEnabled,
             overlayRevision: overlayRevision
         )
+    }
+
+    var activeProcessingStatusText: String {
+        let mode: String
+        switch processingMode {
+        case .live:
+            mode = "Live"
+        case .auto:
+            mode = isBufferedDepthReady ? "Auto (buffered)" : "Auto (live)"
+        case .buffered:
+            mode = "Buffered"
+        }
+
+        let modelName = depthModelStatus
+        let bufferName: String
+        switch processingMode {
+        case .live:
+            bufferName = "buffer bypassed"
+        case .auto:
+            bufferName = isBufferedDepthReady ? "buffer ready" : "no buffer"
+        case .buffered:
+            bufferName = isBufferedDepthReady ? "buffer active" : "buffer missing"
+        }
+
+        return "\(mode) · \(modelName) · \(bufferName)"
     }
 
     private func consume(frame sample: VideoFrameProvider.FrameSample) async {
@@ -286,7 +331,13 @@ final class PlayerViewModel: ObservableObject {
         let depthEstimator = depthEstimator
         let renderer = renderer
         let cachedDepth = lastDepthMap
-        let bufferedDepth = isBufferedDepthReady ? bufferedDepthMap(near: sample.time) : nil
+        let bufferedDepth: CIImage?
+        switch processingMode {
+        case .live:
+            bufferedDepth = nil
+        case .auto, .buffered:
+            bufferedDepth = isBufferedDepthReady ? bufferedDepthMap(near: sample.time) : nil
+        }
         let shouldRefreshDepth = bufferedDepth == nil && Date().timeIntervalSince(lastInferenceDate) >= inferenceInterval
 
         let result = await Task.detached(priority: .userInitiated) {

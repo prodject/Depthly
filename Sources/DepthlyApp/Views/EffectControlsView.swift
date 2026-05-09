@@ -3,6 +3,7 @@ import SwiftUI
 struct EffectControlsView: View {
     @Binding var isEffectEnabled: Bool
     @Binding var settings: EffectSettings
+    @Binding var processingMode: PlayerViewModel.ProcessingMode
     let availableDepthModels: [DepthModelOption]
     let selectedDepthModelID: String
     let depthModelStatus: String
@@ -54,6 +55,19 @@ struct EffectControlsView: View {
                 .labelsHidden()
             }
 
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Processing mode")
+                Picker(
+                    "Processing mode",
+                    selection: $processingMode
+                ) {
+                    ForEach(PlayerViewModel.ProcessingMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Buffered effect")
@@ -87,7 +101,7 @@ struct EffectControlsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("Effect will fall back to live inference until the buffer is ready.")
+                    Text(processingMode == .live ? "Live mode ignores the buffer." : "Effect will fall back to live inference until the buffer is ready.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
