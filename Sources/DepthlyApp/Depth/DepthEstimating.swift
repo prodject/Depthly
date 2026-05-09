@@ -2,6 +2,6 @@ import AVFoundation
 import CoreImage
 import CoreImage.CIFilterBuiltins
 
-protocol DepthEstimating: Sendable {
-    func estimateDepthMap(for pixelBuffer: CVPixelBuffer) async throws -> CIImage
+protocol ForegroundMaskEstimating: Sendable {
+    func estimateForegroundMask(for pixelBuffer: CVPixelBuffer) async throws -> CIImage
 }

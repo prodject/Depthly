@@ -8,7 +8,7 @@ import SwiftUI
 final class PlayerViewModel: ObservableObject {
     private struct RenderResult: @unchecked Sendable {
         let image: CGImage?
-        let depth: CIImage?
+        let mask: CIImage?
         let frameBuffer: CVPixelBuffer
     }
 
@@ -23,11 +23,11 @@ final class PlayerViewModel: ObservableObject {
     @Published var statusText: String = "Open a local video to begin."
     @Published var videoSize: CGSize = .zero
     @Published private(set) var overlayRevision: Int = 0
-    @Published var availableDepthModels: [DepthModelOption] = []
-    @Published var selectedDepthModelID: String = DepthModelOption.mock.id
-    @Published var depthModelStatus: String = "Mock depth"
-    @Published var isLoadingDepthModel = false
-    @Published private(set) var isDepthModelReady = false
+    @Published var availableForegroundModels: [DepthModelOption] = []
+    @Published var selectedForegroundModelID: String = DepthModelOption.mock.id
+    @Published var foregroundModelStatus: String = "Mock foreground mask"
+    @Published var isLoadingForegroundModel = false
+    @Published private(set) var isForegroundModelReady = false
     @Published var isBufferingDepth = false
     @Published var bufferProgress: Double = 0
     @Published var bufferStatus: String = "Buffer not prepared"
@@ -36,7 +36,7 @@ final class PlayerViewModel: ObservableObject {
     private let frameProvider = VideoFrameProvider()
     private let renderer = SplitDepthRenderer()
     private let outputRouting = PlaybackOutputRouting()
-    private var depthEstimator: any DepthEstimating = MockDepthEstimator()
+    private var foregroundMaskEstimator: any ForegroundMaskEstimating = MockForegroundMaskEstimator()
     private var currentFrameBuffer: CVPixelBuffer?
     private var currentVideoURL: URL?
     private var isProcessingFrame = false
@@ -47,22 +47,21 @@ final class PlayerViewModel: ObservableObject {
     private var timeObserverToken: Any?
     private var lastDepthMap: CIImage?
     private let defaultBufferedSampleInterval: TimeInterval = 1.0 / 15.0
-    private var bufferedDepthSamples: [BufferedDepthSample] = []
-    private var loadedDepthModelID: String?
+    private var bufferedDepthSamples: [BufferedForegroundSample] = []
+    private var loadedForegroundModelID: String?
     private var pendingAutoBuffer = false
 
-    init(depthEstimator: (any DepthEstimating)? = nil) {
-        availableDepthModels = DepthModelCatalog.discoverModels()
-        selectedDepthModelID = UserDefaults.standard.string(forKey: Self.selectedDepthModelDefaultsKey)
-            ?? availableDepthModels.first(where: { !$0.isMock })?.id
+    init(foregroundMaskEstimator: (any ForegroundMaskEstimating)? = nil) {
+        availableForegroundModels = DepthModelCatalog.discoverModels()
+        selectedForegroundModelID = UserDefaults.standard.string(forKey: Self.selectedForegroundModelDefaultsKey)
             ?? DepthModelOption.mock.id
 
-        if let depthEstimator {
-            self.depthEstimator = depthEstimator
-            selectedDepthModelID = DepthModelOption.mock.id
-            depthModelStatus = "Injected estimator"
-            isDepthModelReady = true
-            loadedDepthModelID = DepthModelOption.mock.id
+        if let foregroundMaskEstimator {
+            self.foregroundMaskEstimator = foregroundMaskEstimator
+            selectedForegroundModelID = DepthModelOption.mock.id
+            foregroundModelStatus = "Injected foreground mask"
+            isForegroundModelReady = true
+            loadedForegroundModelID = DepthModelOption.mock.id
         }
 
         frameProvider.onFrameAvailable = { [weak self] sample in
@@ -76,7 +75,7 @@ final class PlayerViewModel: ObservableObject {
         outputRouting.attach(to: player)
 
         Task { [weak self] in
-            await self?.loadDepthModelIfNeeded(force: true)
+            await self?.loadForegroundModelIfNeeded(force: true)
         }
     }
 
@@ -142,14 +141,14 @@ final class PlayerViewModel: ObservableObject {
 
         guard canPrepareDepthBufferNow else {
             pendingAutoBuffer = true
-            if isLoadingDepthModel {
-                statusText = "Loading depth model before buffering..."
-                bufferStatus = "Waiting for depth model"
-            } else if !isDepthModelReady {
-                statusText = "Depth model is not ready."
-                bufferStatus = "Depth model not ready"
+            if isLoadingForegroundModel {
+                statusText = "Loading foreground model before buffering..."
+                bufferStatus = "Waiting for foreground model"
+            } else if !isForegroundModelReady {
+                statusText = "Foreground model is not ready."
+                bufferStatus = "Foreground model not ready"
             } else {
-                statusText = "Depth buffer is not available yet."
+                statusText = "Foreground buffer is not available yet."
             }
             return
         }
@@ -163,9 +162,9 @@ final class PlayerViewModel: ObservableObject {
         bufferStatus = "Preparing depth buffer..."
         isBufferedDepthReady = false
         bufferedDepthSamples.removeAll()
-        statusText = "Buffering depth with \(depthModelDisplayName)..."
+        statusText = "Buffering foreground mask with \(foregroundModelDisplayName)..."
 
-        let estimator = depthEstimator
+        let estimator = foregroundMaskEstimator
         let defaultSampleInterval = defaultBufferedSampleInterval
 
         bufferTask = Task.detached(priority: .utility) { [videoURL, estimator, defaultSampleInterval] in
@@ -200,7 +199,7 @@ final class PlayerViewModel: ObservableObject {
                     throw reader.error ?? NSError(domain: "Depthly.Buffer", code: 3, userInfo: [NSLocalizedDescriptionKey: "Unable to start asset reader"])
                 }
 
-                var buffered: [BufferedDepthSample] = []
+                var buffered: [BufferedForegroundSample] = []
                 var nextCaptureTime: Double = 0
                 var lastPublishedProgress: Double = 0
 
@@ -215,8 +214,8 @@ final class PlayerViewModel: ObservableObject {
 
                     nextCaptureTime = seconds + sampleInterval
 
-                    if let depthMap = try? await estimator.estimateDepthMap(for: imageBuffer) {
-                        buffered.append(BufferedDepthSample(time: sampleTime, depthMap: depthMap))
+                    if let mask = try? await estimator.estimateForegroundMask(for: imageBuffer) {
+                        buffered.append(BufferedForegroundSample(time: sampleTime, mask: mask))
                     }
 
                     let progress = durationSeconds > 0 ? min(1, seconds / durationSeconds) : 0
@@ -242,14 +241,14 @@ final class PlayerViewModel: ObservableObject {
                     self.isBufferedDepthReady = !buffered.isEmpty
                     self.isBufferingDepth = false
                     self.bufferProgress = 1
-                    self.bufferStatus = buffered.isEmpty ? "Buffering finished, no samples" : "Depth buffer ready"
-                    self.statusText = buffered.isEmpty ? "Buffering finished, no depth samples" : "Depth buffer prepared. Playback ready."
+                    self.bufferStatus = buffered.isEmpty ? "Buffering finished, no masks" : "Foreground buffer ready"
+                    self.statusText = buffered.isEmpty ? "Buffering finished, no foreground masks" : "Foreground buffer prepared. Playback ready."
                 }
             } catch {
                 await MainActor.run {
                     self.isBufferingDepth = false
                     self.bufferStatus = "Buffering failed"
-                    self.statusText = "Buffer error: \(error.localizedDescription)"
+                    self.statusText = "Foreground buffer error: \(error.localizedDescription)"
                 }
             }
         }
@@ -279,13 +278,13 @@ final class PlayerViewModel: ObservableObject {
         player.volume = Float(volume)
     }
 
-    func selectDepthModel(id: String) {
-        selectedDepthModelID = id
-        UserDefaults.standard.set(id, forKey: Self.selectedDepthModelDefaultsKey)
+    func selectForegroundModel(id: String) {
+        selectedForegroundModelID = id
+        UserDefaults.standard.set(id, forKey: Self.selectedForegroundModelDefaultsKey)
         invalidateDepthBuffer(status: "Buffer invalidated by model change")
         pendingAutoBuffer = currentVideoURL != nil
         Task { [weak self] in
-            await self?.loadDepthModelIfNeeded(force: true)
+            await self?.loadForegroundModelIfNeeded(force: true)
         }
     }
 
@@ -306,29 +305,29 @@ final class PlayerViewModel: ObservableObject {
     }
 
     var activeProcessingStatusText: String {
-        let modelName = depthModelStatus
+        let modelName = foregroundModelStatus
         let bufferName = isBufferedDepthReady ? "buffer ready" : (isBufferingDepth ? "buffering" : "buffer missing")
-        return "Buffered · \(modelName) · \(bufferName)"
+        return "Foreground Mask · \(modelName) · \(bufferName)"
     }
 
     var canStartPlayback: Bool {
         guard currentVideoURL != nil else { return false }
-        guard !isLoadingDepthModel, !isBufferingDepth else { return false }
-        return !isEffectEnabled || (isDepthModelReady && isBufferedDepthReady)
+        guard !isLoadingForegroundModel, !isBufferingDepth else { return false }
+        return !isEffectEnabled || (isForegroundModelReady && isBufferedDepthReady)
     }
 
     var playbackLockReason: String {
-        if isLoadingDepthModel {
-            return "Loading depth model..."
+        if isLoadingForegroundModel {
+            return "Loading foreground model..."
         }
         if isBufferingDepth {
-            return "Building depth buffer..."
+            return "Building foreground buffer..."
         }
-        if isEffectEnabled && !isDepthModelReady {
-            return "Depth model is not ready."
+        if isEffectEnabled && !isForegroundModelReady {
+            return "Foreground model is not ready."
         }
         if isEffectEnabled && !isBufferedDepthReady {
-            return "Depth buffer is not ready."
+            return "Foreground buffer is not ready."
         }
         return "Playback ready."
     }
@@ -348,21 +347,21 @@ final class PlayerViewModel: ObservableObject {
         let frameCopy = sample.pixelBuffer
         let settings = effectSettings
         let renderer = renderer
-        let cachedDepth = lastDepthMap
-        let bufferedDepth = isBufferedDepthReady ? bufferedDepthMap(near: sample.time) : nil
+        let cachedMask = lastDepthMap
+        let bufferedMask = isBufferedDepthReady ? bufferedForegroundMask(near: sample.time) : nil
 
         let result = await Task.detached(priority: .userInitiated) {
-            var depth = cachedDepth
-            if let bufferedDepth {
-                depth = bufferedDepth
+            var mask = cachedMask
+            if let bufferedMask {
+                mask = bufferedMask
             }
 
-            let image = renderer.renderOverlay(frame: frameCopy, depthMap: depth, settings: settings)
-            return RenderResult(image: image, depth: depth, frameBuffer: frameCopy)
+            let image = renderer.renderOverlay(frame: frameCopy, foregroundMask: mask, settings: settings)
+            return RenderResult(image: image, mask: mask, frameBuffer: frameCopy)
         }.value
 
         overlayImage = result.image
-        lastDepthMap = result.depth
+        lastDepthMap = result.mask
         currentFrameBuffer = result.frameBuffer
         overlayRevision &+= 1
         isProcessingFrame = false
@@ -406,13 +405,13 @@ final class PlayerViewModel: ObservableObject {
         bufferStatus = status
     }
 
-    private func bufferedDepthMap(near time: CMTime) -> CIImage? {
+    private func bufferedForegroundMask(near time: CMTime) -> CIImage? {
         guard !bufferedDepthSamples.isEmpty else { return nil }
 
         let targetSeconds = time.seconds
-        guard targetSeconds.isFinite else { return bufferedDepthSamples.first?.depthMap }
+        guard targetSeconds.isFinite else { return bufferedDepthSamples.first?.mask }
 
-        var bestSample: BufferedDepthSample?
+        var bestSample: BufferedForegroundSample?
         var bestDistance = Double.greatestFiniteMagnitude
 
         for sample in bufferedDepthSamples {
@@ -423,64 +422,64 @@ final class PlayerViewModel: ObservableObject {
             }
         }
 
-        return bestSample?.depthMap
+        return bestSample?.mask
     }
 
-    private func loadDepthModelIfNeeded(force: Bool = false) async {
+    private func loadForegroundModelIfNeeded(force: Bool = false) async {
         modelLoadTask?.cancel()
         depthModelLoadGeneration &+= 1
         let generation = depthModelLoadGeneration
 
-        let selected = availableDepthModels.first(where: { $0.id == selectedDepthModelID }) ?? .mock
-        if !force, didLoadDepthModelOnce, selected.id == selectedDepthModelID {
+        let selected = availableForegroundModels.first(where: { $0.id == selectedForegroundModelID }) ?? .mock
+        if !force, didLoadDepthModelOnce, selected.id == selectedForegroundModelID {
             return
         }
 
         guard !selected.isMock, let fileURL = selected.fileURL else {
-            depthEstimator = MockDepthEstimator()
-            depthModelStatus = selected.displayName
-            isLoadingDepthModel = false
-            isDepthModelReady = true
-            loadedDepthModelID = selected.id
+            foregroundMaskEstimator = MockForegroundMaskEstimator()
+            foregroundModelStatus = selected.displayName
+            isLoadingForegroundModel = false
+            isForegroundModelReady = true
+            loadedForegroundModelID = selected.id
             didLoadDepthModelOnce = true
             scheduleDepthPreparationIfPossible()
             return
         }
 
-        isLoadingDepthModel = true
-        isDepthModelReady = false
-        loadedDepthModelID = nil
-        depthModelStatus = "Loading \(selected.displayName)..."
+        isLoadingForegroundModel = true
+        isForegroundModelReady = false
+        loadedForegroundModelID = nil
+        foregroundModelStatus = "Loading \(selected.displayName)..."
         if currentVideoURL != nil {
             statusText = "Loading \(selected.displayName)..."
-            bufferStatus = "Waiting for depth model"
+            bufferStatus = "Waiting for foreground model"
         }
 
         modelLoadTask = Task.detached(priority: .userInitiated) { [fileURL, displayName = selected.displayName, generation] in
             do {
-                let estimator = try await CoreMLDepthEstimator(modelURL: fileURL)
+                let estimator = try await CoreMLForegroundMaskEstimator(modelURL: fileURL)
                 await MainActor.run {
                     guard self.depthModelLoadGeneration == generation else { return }
-                    self.depthEstimator = estimator
-                    self.depthModelStatus = "Core ML · \(displayName)"
-                    self.isLoadingDepthModel = false
-                    self.isDepthModelReady = true
-                    self.loadedDepthModelID = self.selectedDepthModelID
-                    self.effectSettings.invertDepthMask = true
+                    self.foregroundMaskEstimator = estimator
+                    self.foregroundModelStatus = "Core ML · \(displayName)"
+                    self.isLoadingForegroundModel = false
+                    self.isForegroundModelReady = true
+                    self.loadedForegroundModelID = self.selectedForegroundModelID
+                    self.effectSettings.invertDepthMask = false
                     self.didLoadDepthModelOnce = true
                     self.scheduleDepthPreparationIfPossible()
                 }
             } catch {
                 await MainActor.run {
                     guard self.depthModelLoadGeneration == generation else { return }
-                    self.depthEstimator = MockDepthEstimator()
-                    self.depthModelStatus = "Failed to load \(displayName)"
-                    self.isLoadingDepthModel = false
-                    self.isDepthModelReady = false
-                    self.loadedDepthModelID = nil
+                    self.foregroundMaskEstimator = MockForegroundMaskEstimator()
+                    self.foregroundModelStatus = "Failed to load \(displayName)"
+                    self.isLoadingForegroundModel = false
+                    self.isForegroundModelReady = false
+                    self.loadedForegroundModelID = nil
                     self.pendingAutoBuffer = false
                     self.bufferStatus = "Model load failed"
-                    self.statusText = "Model load error: \(error.localizedDescription)"
+                    self.statusText = "Foreground model load error: \(error.localizedDescription)"
                     self.didLoadDepthModelOnce = true
                 }
             }
@@ -489,14 +488,14 @@ final class PlayerViewModel: ObservableObject {
 
     private var canPrepareDepthBufferNow: Bool {
         guard currentVideoURL != nil else { return false }
-        guard !isLoadingDepthModel else { return false }
-        guard isDepthModelReady else { return false }
-        guard loadedDepthModelID == selectedDepthModelID else { return false }
+        guard !isLoadingForegroundModel else { return false }
+        guard isForegroundModelReady else { return false }
+        guard loadedForegroundModelID == selectedForegroundModelID else { return false }
         return true
     }
 
-    private var depthModelDisplayName: String {
-        availableDepthModels.first(where: { $0.id == selectedDepthModelID })?.displayName ?? depthModelStatus
+    private var foregroundModelDisplayName: String {
+        availableForegroundModels.first(where: { $0.id == selectedForegroundModelID })?.displayName ?? foregroundModelStatus
     }
 
     private func scheduleDepthPreparationIfPossible() {
@@ -508,12 +507,12 @@ final class PlayerViewModel: ObservableObject {
             return
         }
 
-        if isLoadingDepthModel {
-            statusText = "Loading depth model before buffering..."
-            bufferStatus = "Waiting for depth model"
-        } else if !isDepthModelReady {
-            statusText = "Depth model is not ready."
-            bufferStatus = "Depth model not ready"
+        if isLoadingForegroundModel {
+            statusText = "Loading foreground model before buffering..."
+            bufferStatus = "Waiting for foreground model"
+        } else if !isForegroundModelReady {
+            statusText = "Foreground model is not ready."
+            bufferStatus = "Foreground model not ready"
         }
     }
 
@@ -524,10 +523,10 @@ final class PlayerViewModel: ObservableObject {
         return 1.0 / targetFPS
     }
 
-    private static let selectedDepthModelDefaultsKey = "selectedDepthModelID"
+    private static let selectedForegroundModelDefaultsKey = "selectedForegroundModelID"
 }
 
-private struct BufferedDepthSample: @unchecked Sendable {
+private struct BufferedForegroundSample: @unchecked Sendable {
     let time: CMTime
-    let depthMap: CIImage
+    let mask: CIImage
 }

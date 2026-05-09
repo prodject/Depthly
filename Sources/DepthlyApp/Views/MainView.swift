@@ -20,7 +20,7 @@ struct MainView: View {
 
             vignette
 
-            if viewModel.isLoadingDepthModel || viewModel.isBufferingDepth {
+            if viewModel.isLoadingForegroundModel || viewModel.isBufferingDepth {
                 preparationOverlay
             }
 
@@ -159,12 +159,12 @@ struct MainView: View {
                         get: { viewModel.effectSettings.showMaskPreview },
                         set: { viewModel.effectSettings.showMaskPreview = $0 }
                     ),
-                    availableDepthModels: viewModel.availableDepthModels,
-                    selectedDepthModelID: viewModel.selectedDepthModelID,
-                    depthModelStatus: viewModel.depthModelStatus,
-                    isLoadingDepthModel: viewModel.isLoadingDepthModel,
-                    onSelectDepthModel: { id in
-                        viewModel.selectDepthModel(id: id)
+                    availableForegroundModels: viewModel.availableForegroundModels,
+                    selectedForegroundModelID: viewModel.selectedForegroundModelID,
+                    foregroundModelStatus: viewModel.foregroundModelStatus,
+                    isLoadingForegroundModel: viewModel.isLoadingForegroundModel,
+                    onSelectForegroundModel: { id in
+                        viewModel.selectForegroundModel(id: id)
                     },
                     isBufferingDepth: viewModel.isBufferingDepth,
                     bufferProgress: viewModel.bufferProgress,
@@ -207,9 +207,9 @@ struct MainView: View {
                 }
 
                 VStack(spacing: 4) {
-                    Text(viewModel.isLoadingDepthModel ? "Loading model" : "Buffering depth")
+                    Text(viewModel.isLoadingForegroundModel ? "Loading model" : "Buffering masks")
                         .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    Text(viewModel.isLoadingDepthModel ? viewModel.depthModelStatus : viewModel.bufferStatus)
+                    Text(viewModel.isLoadingForegroundModel ? viewModel.foregroundModelStatus : viewModel.bufferStatus)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -224,7 +224,7 @@ struct MainView: View {
             .frame(maxWidth: 320)
         }
         .transition(.opacity.combined(with: .scale))
-        .animation(.easeInOut(duration: 0.2), value: viewModel.isBufferingDepth || viewModel.isLoadingDepthModel)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.isBufferingDepth || viewModel.isLoadingForegroundModel)
     }
 
     private func iconButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {

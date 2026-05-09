@@ -2,14 +2,14 @@ import CoreImage
 import CoreML
 import CoreVideo
 
-enum CoreMLDepthEstimatorError: Error {
+enum CoreMLForegroundMaskEstimatorError: Error {
     case missingImageOutput(String)
     case unsupportedModelFormat(URL)
     case invalidImageConstraint(String)
     case pixelBufferCreationFailed
 }
 
-final class CoreMLDepthEstimator: DepthEstimating, @unchecked Sendable {
+final class CoreMLForegroundMaskEstimator: ForegroundMaskEstimating, @unchecked Sendable {
     private let model: MLModel
     private let inputName: String
     private let outputImageProvider: (MLFeatureProvider) throws -> CIImage
@@ -28,11 +28,11 @@ final class CoreMLDepthEstimator: DepthEstimating, @unchecked Sendable {
     }
 
     convenience init(modelURL: URL, inputName: String? = nil, outputName: String? = nil) async throws {
-        let model = try await CoreMLDepthEstimator.loadModel(at: modelURL)
+        let model = try await CoreMLForegroundMaskEstimator.loadModel(at: modelURL)
         let resolvedOutputName = outputName ?? Self.defaultImageOutputName(for: model) ?? "predicted_depth"
         self.init(model: model, inputName: inputName) { provider in
             guard let buffer = provider.featureValue(for: resolvedOutputName)?.imageBufferValue else {
-                throw CoreMLDepthEstimatorError.missingImageOutput(resolvedOutputName)
+                throw CoreMLForegroundMaskEstimatorError.missingImageOutput(resolvedOutputName)
             }
             return CIImage(cvPixelBuffer: buffer)
         }
@@ -48,11 +48,11 @@ final class CoreMLDepthEstimator: DepthEstimating, @unchecked Sendable {
             let compiledURL = try await MLModel.compileModel(at: url)
             return try await MLModel.load(contentsOf: compiledURL, configuration: configuration)
         default:
-            throw CoreMLDepthEstimatorError.unsupportedModelFormat(url)
+            throw CoreMLForegroundMaskEstimatorError.unsupportedModelFormat(url)
         }
     }
 
-    func estimateDepthMap(for pixelBuffer: CVPixelBuffer) async throws -> CIImage {
+    func estimateForegroundMask(for pixelBuffer: CVPixelBuffer) async throws -> CIImage {
         let preparedPixelBuffer = try prepareInputPixelBuffer(pixelBuffer)
         let features = try MLDictionaryFeatureProvider(dictionary: [
             inputName: MLFeatureValue(pixelBuffer: preparedPixelBuffer)
@@ -69,7 +69,7 @@ final class CoreMLDepthEstimator: DepthEstimating, @unchecked Sendable {
         let targetWidth = constraint.pixelsWide
         let targetHeight = constraint.pixelsHigh
         guard targetWidth > 0, targetHeight > 0 else {
-            throw CoreMLDepthEstimatorError.invalidImageConstraint(inputName)
+            throw CoreMLForegroundMaskEstimatorError.invalidImageConstraint(inputName)
         }
 
         let currentWidth = CVPixelBufferGetWidth(pixelBuffer)
@@ -98,7 +98,7 @@ final class CoreMLDepthEstimator: DepthEstimating, @unchecked Sendable {
             &resizedBuffer
         )
         guard status == kCVReturnSuccess, let resizedBuffer else {
-            throw CoreMLDepthEstimatorError.pixelBufferCreationFailed
+            throw CoreMLForegroundMaskEstimatorError.pixelBufferCreationFailed
         }
 
         let sourceImage = CIImage(cvPixelBuffer: pixelBuffer)

@@ -4,20 +4,7 @@ import CoreImage
 final class SplitDepthRenderer: @unchecked Sendable {
     private let context = CIContext(options: [.useSoftwareRenderer: false])
     private var previousMask: CIImage?
-    private var previousRawDepth: CIImage?
-
-    private static let normalizeKernel: CIColorKernel = {
-        guard let kernel = CIColorKernel(source: """
-        kernel vec4 normalizeDepth(__sample s, float minValue, float maxValue) {
-            float range = max(maxValue - minValue, 0.0001);
-            float value = clamp((s.r - minValue) / range, 0.0, 1.0);
-            return vec4(value, value, value, 1.0);
-        }
-        """) else {
-            fatalError("Failed to build normalize kernel")
-        }
-        return kernel
-    }()
+    private var previousInputMask: CIImage?
 
     private static let thresholdKernel: CIColorKernel = {
         guard let kernel = CIColorKernel(source: """
@@ -36,27 +23,25 @@ final class SplitDepthRenderer: @unchecked Sendable {
 
     func reset() {
         previousMask = nil
-        previousRawDepth = nil
+        previousInputMask = nil
     }
 
     func renderOverlay(
         frame: CVPixelBuffer,
-        depthMap: CIImage?,
+        foregroundMask: CIImage?,
         settings: EffectSettings
     ) -> CGImage? {
         let frameImage = CIImage(cvPixelBuffer: frame)
         let extent = frameImage.extent.integral
 
-        guard let depthMap else {
+        guard let foregroundMask else {
             let fallbackMask = previousMask ?? makeEmptyMask(extent: extent)
             return renderForegroundOverlay(frameImage: frameImage, mask: fallbackMask, settings: settings)
         }
 
-        let stabilizedDepth = stabilizedDepthMap(from: depthMap, extent: extent, settings: settings)
-        let depthForMask = settings.invertDepthMask ? inverted(image: stabilizedDepth, extent: extent) : stabilizedDepth
-        let mask = foregroundMask(from: depthForMask, extent: extent, settings: settings)
-        let smoothedMask = smooth(mask: mask, with: previousMask, factor: settings.temporalSmoothing, extent: extent)
-        previousRawDepth = depthForMask
+        let preparedMask = preparedForegroundMask(from: foregroundMask, extent: extent, settings: settings)
+        let smoothedMask = smooth(mask: preparedMask, with: previousMask, factor: settings.temporalSmoothing, extent: extent)
+        previousInputMask = preparedMask
         previousMask = smoothedMask
 
         return renderForegroundOverlay(frameImage: frameImage, mask: smoothedMask, settings: settings)
@@ -65,9 +50,8 @@ final class SplitDepthRenderer: @unchecked Sendable {
     private func renderForegroundOverlay(frameImage: CIImage, mask: CIImage, settings: EffectSettings) -> CGImage? {
         let extent = frameImage.extent.integral
         let canvasExtent = extent
-        let maskForForeground = mask
         if settings.showMaskPreview {
-            let preview = debugMaskPreview(mask: maskForForeground, depthMap: previousRawDepth, extent: extent)
+            let preview = debugMaskPreview(mask: mask, sourceMask: previousInputMask, frameImage: frameImage, extent: extent)
             return context.createCGImage(preview, from: canvasExtent)
         }
 
@@ -91,7 +75,7 @@ final class SplitDepthRenderer: @unchecked Sendable {
 
         let foreground = frameImage.applyingFilter("CIBlendWithAlphaMask", parameters: [
             kCIInputBackgroundImageKey: transparentBackground,
-            kCIInputMaskImageKey: maskForForeground
+            kCIInputMaskImageKey: mask
         ])
 
         let bandLimitedForeground = foreground.applyingFilter("CIBlendWithAlphaMask", parameters: [
@@ -99,9 +83,9 @@ final class SplitDepthRenderer: @unchecked Sendable {
             kCIInputMaskImageKey: expandedStripeMask
         ])
 
-        let foregroundShift = measuredForegroundShift(from: maskForForeground, extent: extent, settings: settings)
-        let horizontalScale = 1.0 + (0.03 * settings.effectStrength)
-        let horizontalPush = foregroundShift + max(settings.foregroundDisplacement, 0) * settings.effectStrength * 0.12
+        let foregroundShift = measuredForegroundShift(from: mask, extent: extent, settings: settings)
+        let horizontalScale = 1.0 + (0.045 * settings.effectStrength)
+        let horizontalPush = foregroundShift + max(settings.foregroundDisplacement, 0) * settings.effectStrength * 0.18
         let transform = CGAffineTransform(translationX: canvasExtent.midX, y: canvasExtent.midY)
             .scaledBy(x: horizontalScale, y: 1.0)
             .translatedBy(x: -extent.midX + horizontalPush, y: -extent.midY)
@@ -111,28 +95,30 @@ final class SplitDepthRenderer: @unchecked Sendable {
         return context.createCGImage(composited, from: canvasExtent)
     }
 
-    private func debugMaskPreview(mask: CIImage, depthMap: CIImage?, extent: CGRect) -> CIImage {
-        let normalizedDepth = depthMap.map {
-            normalizeDepthDynamicRange($0, extent: extent)
-        } ?? CIImage(color: CIColor(red: 0.05, green: 0.05, blue: 0.06, alpha: 1.0)).cropped(to: extent)
-
-        let depthBackground = normalizedDepth.applyingFilter("CIFalseColor", parameters: [
-            "inputColor0": CIColor(red: 0.04, green: 0.05, blue: 0.08, alpha: 1.0),
-            "inputColor1": CIColor(red: 0.72, green: 0.86, blue: 1.0, alpha: 1.0)
-        ])
-
-        let highlightedMask = mask
+    private func debugMaskPreview(mask: CIImage, sourceMask: CIImage?, frameImage: CIImage, extent: CGRect) -> CIImage {
+        let baseFrame = frameImage
             .applyingFilter("CIColorControls", parameters: [
                 kCIInputSaturationKey: 0.0,
-                kCIInputContrastKey: 1.65,
-                kCIInputBrightnessKey: 0.02
+                kCIInputContrastKey: 1.15,
+                kCIInputBrightnessKey: -0.02
             ])
-            .applyingFilter("CIFalseColor", parameters: [
-                "inputColor0": CIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0),
-                "inputColor1": CIColor(red: 1.0, green: 0.88, blue: 0.46, alpha: 1.0)
-            ])
+            .cropped(to: extent)
 
-        return highlightedMask.composited(over: depthBackground.cropped(to: extent))
+        let sourcePreview = (sourceMask ?? mask)
+            .applyingFilter("CIFalseColor", parameters: [
+                "inputColor0": CIColor(red: 0.05, green: 0.06, blue: 0.09, alpha: 0.0),
+                "inputColor1": CIColor(red: 0.45, green: 0.74, blue: 1.0, alpha: 0.55)
+            ])
+            .cropped(to: extent)
+
+        let cleanedMask = mask.applyingFilter("CIFalseColor", parameters: [
+            "inputColor0": CIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0),
+            "inputColor1": CIColor(red: 1.0, green: 0.86, blue: 0.22, alpha: 1.0)
+        ])
+
+        return cleanedMask
+            .composited(over: sourcePreview)
+            .composited(over: baseFrame)
     }
 
     private func inverted(image: CIImage, extent: CGRect) -> CIImage {
@@ -200,56 +186,44 @@ final class SplitDepthRenderer: @unchecked Sendable {
         return CGFloat(weightedX / total)
     }
 
-    private func stabilizedDepthMap(from depthMap: CIImage, extent: CGRect, settings: EffectSettings) -> CIImage {
-        let scaled = scale(image: depthMap, toFit: extent)
+    private func preparedForegroundMask(from inputMask: CIImage, extent: CGRect, settings: EffectSettings) -> CIImage {
+        let scaledMask = scale(image: inputMask, toFit: extent)
             .applyingFilter("CIColorControls", parameters: [
                 kCIInputSaturationKey: 0.0,
-                kCIInputContrastKey: 1.0,
-                kCIInputBrightnessKey: 0.0
+                kCIInputContrastKey: 1.8,
+                kCIInputBrightnessKey: -0.08
             ])
             .applyingFilter("CIMedianFilter")
             .cropped(to: extent)
 
-        let normalized = normalizeDepthDynamicRange(scaled, extent: extent)
+        let correctedMask = settings.invertDepthMask ? inverted(image: scaledMask, extent: extent) : scaledMask
 
-        guard let previousRawDepth else { return normalized }
-        let carry = min(max(settings.temporalSmoothing * 0.55, 0.0), 0.92)
-        let mix = CIImage(color: CIColor(red: carry, green: carry, blue: carry, alpha: carry))
-            .cropped(to: extent)
-
-        return normalized.applyingFilter("CIBlendWithMask", parameters: [
-            kCIInputBackgroundImageKey: previousRawDepth,
-            kCIInputMaskImageKey: mix
-        ])
-    }
-
-    private func foregroundMask(from depthMap: CIImage, extent: CGRect, settings: EffectSettings) -> CIImage {
         let thresholded = Self.thresholdKernel.apply(
             extent: extent,
             arguments: [
-                depthMap,
+                correctedMask,
                 settings.depthCutoff,
                 max(0.002, Double(settings.edgeSoftness / max(extent.width, extent.height))),
                 max(0.001, settings.effectStrength)
             ]
-        ) ?? depthMap
+        ) ?? correctedMask
 
         let eroded = thresholded.applyingFilter("CIMorphologyMinimum", parameters: [
-            kCIInputRadiusKey: max(1.0, settings.edgeSoftness / 8.0)
+            kCIInputRadiusKey: max(1.0, settings.edgeSoftness / 10.0)
         ])
 
         let expanded = eroded
             .applyingFilter("CIMorphologyMaximum", parameters: [
-                kCIInputRadiusKey: max(1.0, settings.edgeSoftness / 5.0)
+                kCIInputRadiusKey: max(1.0, settings.edgeSoftness / 3.5)
             ])
             .applyingFilter("CIGaussianBlur", parameters: [
-                kCIInputRadiusKey: max(0.5, settings.edgeSoftness * 0.7)
+                kCIInputRadiusKey: max(0.5, settings.edgeSoftness * 0.55)
             ])
             .cropped(to: extent)
 
         return expanded
             .applyingFilter("CIColorControls", parameters: [
-                kCIInputContrastKey: 1.45
+                kCIInputContrastKey: 2.1
             ])
             .cropped(to: extent)
     }
@@ -262,52 +236,6 @@ final class SplitDepthRenderer: @unchecked Sendable {
         let scaleY = extent.height / sourceExtent.height
         let transform = CGAffineTransform(scaleX: scaleX, y: scaleY)
         return image.transformed(by: transform).cropped(to: extent)
-    }
-
-    private func normalizeDepthDynamicRange(_ image: CIImage, extent: CGRect) -> CIImage {
-        guard let stats = minMax(for: image, extent: extent) else {
-            return image.cropped(to: extent)
-        }
-
-        let dynamicRange = stats.max - stats.min
-        guard dynamicRange > 0.0001 else {
-            return image.cropped(to: extent)
-        }
-
-        return Self.normalizeKernel.apply(
-            extent: extent,
-            arguments: [image, stats.min, stats.max]
-        )?.cropped(to: extent) ?? image.cropped(to: extent)
-    }
-
-    private func minMax(for image: CIImage, extent: CGRect) -> (min: Float, max: Float)? {
-        let sampledImage = image.cropped(to: extent)
-        let minimumImage = sampledImage.applyingFilter("CIAreaMinimum", parameters: [
-            kCIInputExtentKey: CIVector(cgRect: extent)
-        ])
-        let maximumImage = sampledImage.applyingFilter("CIAreaMaximum", parameters: [
-            kCIInputExtentKey: CIVector(cgRect: extent)
-        ])
-
-        guard let minValue = sampleSingleChannelValue(from: minimumImage),
-              let maxValue = sampleSingleChannelValue(from: maximumImage) else {
-            return nil
-        }
-
-        return (minValue, maxValue)
-    }
-
-    private func sampleSingleChannelValue(from image: CIImage) -> Float? {
-        var pixel = [Float](repeating: 0, count: 4)
-        context.render(
-            image,
-            toBitmap: &pixel,
-            rowBytes: MemoryLayout<Float>.size * 4,
-            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
-            format: .Rf,
-            colorSpace: nil
-        )
-        return pixel[0].isFinite ? pixel[0] : nil
     }
 
     private func makeEmptyMask(extent: CGRect) -> CIImage {

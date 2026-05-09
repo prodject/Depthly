@@ -4,11 +4,11 @@ struct EffectControlsView: View {
     @Binding var isEffectEnabled: Bool
     @Binding var settings: EffectSettings
     @Binding var showMaskPreview: Bool
-    let availableDepthModels: [DepthModelOption]
-    let selectedDepthModelID: String
-    let depthModelStatus: String
-    let isLoadingDepthModel: Bool
-    let onSelectDepthModel: (String) -> Void
+    let availableForegroundModels: [DepthModelOption]
+    let selectedForegroundModelID: String
+    let foregroundModelStatus: String
+    let isLoadingForegroundModel: Bool
+    let onSelectForegroundModel: (String) -> Void
     let isBufferingDepth: Bool
     let bufferProgress: Double
     let bufferStatus: String
@@ -34,21 +34,21 @@ struct EffectControlsView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("Depth model")
+                    Text("Foreground model")
                     Spacer()
-                    Text(isLoadingDepthModel ? "Loading..." : depthModelStatus)
+                    Text(isLoadingForegroundModel ? "Loading..." : foregroundModelStatus)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
 
                 Picker(
-                    "Depth model",
+                    "Foreground model",
                     selection: Binding(
-                        get: { selectedDepthModelID },
-                        set: { onSelectDepthModel($0) }
+                        get: { selectedForegroundModelID },
+                        set: { onSelectForegroundModel($0) }
                     )
                 ) {
-                    ForEach(availableDepthModels) { model in
+                    ForEach(availableForegroundModels) { model in
                         Text(model.displayName).tag(model.id)
                     }
                 }
@@ -57,7 +57,7 @@ struct EffectControlsView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Depth buffer")
+                    Text("Foreground buffer")
                     Spacer()
                     Text(bufferStatus)
                         .foregroundStyle(.secondary)
@@ -95,7 +95,7 @@ struct EffectControlsView: View {
             }
 
             SliderRow(
-                title: "Depth cutoff",
+                title: "Mask threshold",
                 value: $settings.depthCutoff,
                 range: 0.0...1.0,
                 suffix: String(format: "%.2f", settings.depthCutoff)
@@ -145,7 +145,7 @@ struct EffectControlsView: View {
                 suffix: "\(Int(settings.foregroundDisplacement)) px"
             )
 
-            Toggle("Invert depth polarity", isOn: $settings.invertDepthMask)
+            Toggle("Invert mask", isOn: $settings.invertDepthMask)
             Toggle("Debug mask preview", isOn: $showMaskPreview)
         }
     }

@@ -8,7 +8,7 @@ struct DepthModelOption: Identifiable, Hashable, Sendable {
 
     static let mock = DepthModelOption(
         id: "mock",
-        displayName: "Mock depth",
+        displayName: "Mock foreground mask",
         fileURL: nil,
         isMock: true
     )
