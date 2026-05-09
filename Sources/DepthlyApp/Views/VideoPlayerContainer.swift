@@ -15,24 +15,14 @@ struct VideoPlayerContainer: View {
     }
 
     private var canvasAspectRatio: CGFloat {
-        guard isEffectEnabled else { return videoAspectRatio }
-        let width = max(videoSize.width, 1) + borderThickness * 2
-        let height = max(videoSize.height, 1)
-        return width / height
+        videoAspectRatio
     }
 
     var body: some View {
         GeometryReader { proxy in
             let bounds = CGRect(origin: .zero, size: proxy.size)
             let canvasRect = fitRect(aspectRatio: canvasAspectRatio, in: bounds)
-            let playerRect = isEffectEnabled
-                ? CGRect(
-                    x: canvasRect.minX + borderThickness,
-                    y: canvasRect.minY,
-                    width: max(canvasRect.width - borderThickness * 2, 1),
-                    height: canvasRect.height
-                )
-                : canvasRect
+            let playerRect = canvasRect
 
             ZStack {
                 Color.black

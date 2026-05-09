@@ -15,7 +15,7 @@ struct EffectControlsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Split-depth")
                         .font(.headline)
-                    Text("Local rendering, no server")
+                    Text("Three vertical bars, local rendering, no server")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -57,7 +57,7 @@ struct EffectControlsView: View {
             )
 
             SliderRow(
-                title: "Border thickness",
+                title: "Bar thickness",
                 value: Binding(
                     get: { Double(settings.borderThickness) },
                     set: { settings.borderThickness = CGFloat($0) }

@@ -41,13 +41,7 @@ final class SplitDepthRenderer: @unchecked Sendable {
 
     private func renderForegroundOverlay(frameImage: CIImage, mask: CIImage, settings: EffectSettings) -> CGImage? {
         let extent = frameImage.extent.integral
-        let border = max(settings.borderThickness, 0)
-        let canvasExtent = CGRect(
-            x: extent.minX - border,
-            y: extent.minY,
-            width: extent.width + border * 2,
-            height: extent.height
-        ).integral
+        let canvasExtent = extent
         let transparentBackground = CIImage(color: .clear).cropped(to: canvasExtent)
 
         let foreground = frameImage.applyingFilter("CIBlendWithAlphaMask", parameters: [
@@ -56,16 +50,39 @@ final class SplitDepthRenderer: @unchecked Sendable {
         ])
 
         let horizontalScale = 1.0 + (0.12 * settings.effectStrength)
-        let horizontalPush = border * 0.12 * settings.effectStrength
+        let horizontalPush = max(settings.borderThickness, 0) * 0.10 * settings.effectStrength
         let transform = CGAffineTransform(translationX: canvasExtent.midX, y: canvasExtent.midY)
             .scaledBy(x: horizontalScale, y: 1.0)
             .translatedBy(x: -extent.midX + horizontalPush, y: -extent.midY)
 
         let transformedForeground = foreground.transformed(by: transform)
+        let bars = renderVerticalBars(in: canvasExtent, settings: settings)
         let canvas = CIImage(color: .clear).cropped(to: canvasExtent)
-        let composited = transformedForeground.composited(over: canvas)
+        let composited = transformedForeground.composited(over: bars.composited(over: canvas))
 
         return context.createCGImage(composited, from: canvasExtent)
+    }
+
+    private func renderVerticalBars(in extent: CGRect, settings: EffectSettings) -> CIImage {
+        let barCount = 3
+        let barWidth = max(settings.borderThickness, 10)
+        let spacing = extent.width / CGFloat(barCount + 1)
+
+        var overlay = CIImage(color: .clear).cropped(to: extent)
+        for index in 1...barCount {
+            let centerX = extent.minX + spacing * CGFloat(index)
+            let barRect = CGRect(
+                x: centerX - barWidth / 2,
+                y: extent.minY,
+                width: barWidth,
+                height: extent.height
+            ).integral
+
+            let bar = CIImage(color: .black).cropped(to: barRect)
+            overlay = bar.composited(over: overlay)
+        }
+
+        return overlay
     }
 
     private func foregroundMask(from depthMap: CIImage, extent: CGRect, settings: EffectSettings) -> CIImage {
