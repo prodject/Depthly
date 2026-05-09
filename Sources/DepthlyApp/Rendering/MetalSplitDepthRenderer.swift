@@ -6,7 +6,7 @@ import MetalKit
 import QuartzCore
 import SwiftUI
 
-struct MetalSplitDepthRenderState {
+struct MetalSplitDepthRenderState: @unchecked Sendable {
     var frameBuffer: CVPixelBuffer?
     var overlayImage: CGImage?
     var videoSize: CGSize = .zero

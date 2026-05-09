@@ -37,36 +37,11 @@ final class CoreMLDepthEstimator: DepthEstimating, @unchecked Sendable {
         switch url.pathExtension.lowercased() {
         case "mlmodelc":
             return try await MLModel.load(contentsOf: url, configuration: configuration)
-        case "mlpackage":
-            if #available(macOS 15.0, *) {
-                do {
-                    let asset = try MLModelAsset(url: url)
-                    return try await load(asset: asset, configuration: configuration)
-                } catch {
-                    let compiledURL = try await MLModel.compileModel(at: url)
-                    return try await MLModel.load(contentsOf: compiledURL, configuration: configuration)
-                }
-            } else {
-                let compiledURL = try await MLModel.compileModel(at: url)
-                return try await MLModel.load(contentsOf: compiledURL, configuration: configuration)
-            }
-        case "mlmodel":
+        case "mlpackage", "mlmodel":
             let compiledURL = try await MLModel.compileModel(at: url)
             return try await MLModel.load(contentsOf: compiledURL, configuration: configuration)
         default:
             throw CoreMLDepthEstimatorError.unsupportedModelFormat(url)
-        }
-    }
-
-    private static func load(asset: MLModelAsset, configuration: MLModelConfiguration) async throws -> MLModel {
-        try await withCheckedThrowingContinuation { continuation in
-            MLModel.load(asset, configuration: configuration) { model, error in
-                if let model {
-                    continuation.resume(returning: model)
-                } else {
-                    continuation.resume(throwing: error ?? CoreMLDepthEstimatorError.unsupportedModelFormat(URL(fileURLWithPath: "<asset>")))
-                }
-            }
         }
     }
 
