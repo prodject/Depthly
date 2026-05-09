@@ -40,6 +40,7 @@ final class PlayerViewModel: ObservableObject {
     private var depthModelLoadGeneration: Int = 0
     private var timeObserverToken: Any?
     private var lastDepthMap: CIImage?
+    private let defaultBufferedSampleInterval: TimeInterval = 1.0 / 15.0
     private var bufferedDepthSamples: [BufferedDepthSample] = []
     private var loadedDepthModelID: String?
     private var pendingAutoBuffer = false
@@ -159,8 +160,9 @@ final class PlayerViewModel: ObservableObject {
         statusText = "Buffering depth with \(depthModelDisplayName)..."
 
         let estimator = depthEstimator
+        let defaultSampleInterval = defaultBufferedSampleInterval
 
-        bufferTask = Task.detached(priority: .utility) { [videoURL, estimator] in
+        bufferTask = Task.detached(priority: .utility) { [videoURL, estimator, defaultSampleInterval] in
             do {
                 let asset = AVURLAsset(url: videoURL)
                 let duration = try await asset.load(.duration)
@@ -169,6 +171,12 @@ final class PlayerViewModel: ObservableObject {
                 guard let videoTrack = tracks.first else {
                     throw NSError(domain: "Depthly.Buffer", code: 1, userInfo: [NSLocalizedDescriptionKey: "No video track found"])
                 }
+
+                let nominalFrameRate = try await videoTrack.load(.nominalFrameRate)
+                let sampleInterval = Self.bufferedSamplingInterval(
+                    nominalFrameRate: Double(nominalFrameRate),
+                    fallback: defaultSampleInterval
+                )
 
                 let reader = try AVAssetReader(asset: asset)
                 let outputSettings: [String: Any] = [
@@ -187,6 +195,7 @@ final class PlayerViewModel: ObservableObject {
                 }
 
                 var buffered: [BufferedDepthSample] = []
+                var nextCaptureTime: Double = 0
                 var lastPublishedProgress: Double = 0
 
                 while reader.status == .reading && !Task.isCancelled {
@@ -196,6 +205,9 @@ final class PlayerViewModel: ObservableObject {
                     let sampleTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
                     let seconds = sampleTime.seconds
                     guard seconds.isFinite else { continue }
+                    guard seconds + 0.0001 >= nextCaptureTime else { continue }
+
+                    nextCaptureTime = seconds + sampleInterval
 
                     if let depthMap = try? await estimator.estimateDepthMap(for: imageBuffer) {
                         buffered.append(BufferedDepthSample(time: sampleTime, depthMap: depthMap))
@@ -393,28 +405,18 @@ final class PlayerViewModel: ObservableObject {
         let targetSeconds = time.seconds
         guard targetSeconds.isFinite else { return bufferedDepthSamples.first?.depthMap }
 
-        var low = 0
-        var high = bufferedDepthSamples.count - 1
+        var bestSample: BufferedDepthSample?
+        var bestDistance = Double.greatestFiniteMagnitude
 
-        while low < high {
-            let mid = (low + high) / 2
-            if bufferedDepthSamples[mid].time.seconds < targetSeconds {
-                low = mid + 1
-            } else {
-                high = mid
+        for sample in bufferedDepthSamples {
+            let distance = abs(sample.time.seconds - targetSeconds)
+            if distance < bestDistance {
+                bestDistance = distance
+                bestSample = sample
             }
         }
 
-        let upperIndex = low
-        let lowerIndex = max(0, upperIndex - 1)
-
-        let lowerSample = bufferedDepthSamples[lowerIndex]
-        let upperSample = bufferedDepthSamples[min(upperIndex, bufferedDepthSamples.count - 1)]
-
-        let lowerDistance = abs(lowerSample.time.seconds - targetSeconds)
-        let upperDistance = abs(upperSample.time.seconds - targetSeconds)
-
-        return lowerDistance <= upperDistance ? lowerSample.depthMap : upperSample.depthMap
+        return bestSample?.depthMap
     }
 
     private func loadDepthModelIfNeeded(force: Bool = false) async {
@@ -505,6 +507,13 @@ final class PlayerViewModel: ObservableObject {
             statusText = "Depth model is not ready."
             bufferStatus = "Depth model not ready"
         }
+    }
+
+    nonisolated private static func bufferedSamplingInterval(nominalFrameRate nominalFPS: Double, fallback: TimeInterval) -> TimeInterval {
+        guard nominalFPS.isFinite, nominalFPS > 0 else { return fallback }
+
+        let targetFPS = min(max(nominalFPS, 12.0), 24.0)
+        return 1.0 / targetFPS
     }
 
     private static let selectedDepthModelDefaultsKey = "selectedDepthModelID"
