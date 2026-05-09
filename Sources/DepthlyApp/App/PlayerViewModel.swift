@@ -16,11 +16,13 @@ final class PlayerViewModel: ObservableObject {
     @Published var isPlaying = false
     @Published var statusText: String = "Open a local video to begin."
     @Published var videoSize: CGSize = .zero
+    @Published private(set) var overlayRevision: Int = 0
 
     private let frameProvider = VideoFrameProvider()
     private let renderer = SplitDepthRenderer()
     private let outputRouting = PlaybackOutputRouting()
     private let depthEstimator: any DepthEstimating
+    private var currentFrameBuffer: CVPixelBuffer?
     private var isProcessingFrame = false
     private var timeObserverToken: Any?
     private var lastDepthMap: CIImage?
@@ -122,8 +124,20 @@ final class PlayerViewModel: ObservableObject {
         return currentTime / duration
     }
 
+    func metalRenderState() -> MetalSplitDepthRenderState {
+        MetalSplitDepthRenderState(
+            frameBuffer: currentFrameBuffer,
+            overlayImage: overlayImage,
+            videoSize: videoSize,
+            borderThickness: effectSettings.borderThickness,
+            isEffectEnabled: isEffectEnabled,
+            overlayRevision: overlayRevision
+        )
+    }
+
     private func consume(frame sample: VideoFrameProvider.FrameSample) async {
         currentTime = sample.time.seconds.isFinite ? sample.time.seconds : currentTime
+        currentFrameBuffer = sample.pixelBuffer
 
         guard isEffectEnabled else {
             overlayImage = nil
@@ -153,6 +167,7 @@ final class PlayerViewModel: ObservableObject {
         overlayImage = result.0
         lastDepthMap = result.1
         lastInferenceDate = .now
+        overlayRevision &+= 1
         isProcessingFrame = false
     }
 
@@ -178,12 +193,15 @@ final class PlayerViewModel: ObservableObject {
         lastDepthMap = nil
         isProcessingFrame = false
         isPlaying = false
+        currentFrameBuffer = nil
     }
 
     private static func makeDefaultDepthEstimator() -> any DepthEstimating {
-        if let url = Bundle.main.url(forResource: "DepthAnythingV2Small", withExtension: "mlmodelc"),
-           let estimator = try? CoreMLDepthEstimator(compiledModelURL: url) {
-            return estimator
+        for `extension` in ["mlmodelc", "mlmodel"] {
+            if let url = Bundle.main.url(forResource: "DepthAnythingV2Small", withExtension: `extension`),
+               let estimator = try? CoreMLDepthEstimator(compiledModelURL: url) {
+                return estimator
+            }
         }
         return MockDepthEstimator()
     }

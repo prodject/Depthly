@@ -21,7 +21,13 @@ final class CoreMLDepthEstimator: DepthEstimating, @unchecked Sendable {
     }
 
     convenience init(compiledModelURL: URL, inputName: String = "image", outputName: String = "depth") throws {
-        let model = try MLModel(contentsOf: compiledModelURL, configuration: MLModelConfiguration())
+        let model: MLModel
+        if compiledModelURL.pathExtension == "mlmodelc" {
+            model = try MLModel(contentsOf: compiledModelURL, configuration: MLModelConfiguration())
+        } else {
+            let compiledURL = try MLModel.compileModel(at: compiledModelURL)
+            model = try MLModel(contentsOf: compiledURL, configuration: MLModelConfiguration())
+        }
         self.init(model: model, inputName: inputName) { provider in
             guard let buffer = provider.featureValue(for: outputName)?.imageBufferValue else {
                 throw CoreMLDepthEstimatorError.missingImageOutput(outputName)

@@ -3,7 +3,7 @@ import CoreMedia
 import QuartzCore
 
 final class VideoFrameProvider {
-    struct FrameSample {
+    struct FrameSample: @unchecked Sendable {
         let pixelBuffer: CVPixelBuffer
         let time: CMTime
     }
