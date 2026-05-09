@@ -381,6 +381,7 @@ final class PlayerViewModel: ObservableObject {
 
     private func stopFramePipeline() {
         frameProvider.stop()
+        renderer.reset()
         overlayImage = nil
         lastDepthMap = nil
         isProcessingFrame = false
