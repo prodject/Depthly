@@ -112,6 +112,16 @@ struct EffectControlsView: View {
             )
 
             SliderRow(
+                title: "Top / bottom thickness",
+                value: Binding(
+                    get: { Double(settings.topBottomBorderThickness) },
+                    set: { settings.topBottomBorderThickness = CGFloat($0) }
+                ),
+                range: 0.0...160.0,
+                suffix: "\(Int(settings.topBottomBorderThickness)) px"
+            )
+
+            SliderRow(
                 title: "Edge softness",
                 value: Binding(
                     get: { Double(settings.edgeSoftness) },

@@ -56,6 +56,11 @@ final class SplitDepthRenderer: @unchecked Sendable {
         }
 
         let stripeMask = verticalStripeMask(extent: extent, settings: settings)
+        let frameMask = horizontalStripeMask(extent: extent, settings: settings)
+            .applyingFilter("CIMaximumCompositing", parameters: [
+                kCIInputBackgroundImageKey: stripeMask
+            ])
+            .cropped(to: extent)
         let cutoutMask = mask
             .applyingFilter("CIMorphologyMaximum", parameters: [
                 kCIInputRadiusKey: max(1.0, settings.borderThickness * 0.05)
@@ -70,7 +75,7 @@ final class SplitDepthRenderer: @unchecked Sendable {
             .cropped(to: canvasExtent)
             .applyingFilter("CIBlendWithAlphaMask", parameters: [
                 kCIInputBackgroundImageKey: transparentBackground,
-                kCIInputMaskImageKey: stripeMask
+                kCIInputMaskImageKey: frameMask
             ])
 
         let foregroundLayer = frameImage.applyingFilter("CIBlendWithMask", parameters: [
@@ -78,10 +83,13 @@ final class SplitDepthRenderer: @unchecked Sendable {
             kCIInputMaskImageKey: cutoutMask
         ])
 
-        let measuredShift = measuredForegroundShift(from: mask, extent: extent, settings: settings)
-        let displacement = measuredShift + (settings.foregroundDisplacement * settings.effectStrength)
+        let measuredShift = measuredForegroundOffset(from: mask, extent: extent, settings: settings)
+        let displacement = CGPoint(
+            x: measuredShift.x + (settings.foregroundDisplacement * settings.effectStrength),
+            y: measuredShift.y
+        )
         let translatedForeground = foregroundLayer
-            .transformed(by: CGAffineTransform(translationX: displacement, y: 0))
+            .transformed(by: CGAffineTransform(translationX: displacement.x, y: displacement.y))
             .cropped(to: canvasExtent)
 
         let overlay = translatedForeground.composited(over: bars)
@@ -120,7 +128,7 @@ final class SplitDepthRenderer: @unchecked Sendable {
             .cropped(to: extent)
     }
 
-    private func measuredForegroundShift(from mask: CIImage, extent: CGRect, settings: EffectSettings) -> CGFloat {
+    private func measuredForegroundOffset(from mask: CIImage, extent: CGRect, settings: EffectSettings) -> CGPoint {
         let targetWidth: CGFloat = 72
         let scale = targetWidth / max(extent.width, 1)
         let scaledExtent = CGRect(
@@ -135,16 +143,21 @@ final class SplitDepthRenderer: @unchecked Sendable {
             .cropped(to: scaledExtent)
 
         guard let cgImage = context.createCGImage(scaledMask, from: scaledMask.extent),
-              let centroidX = centroidX(of: cgImage) else {
-            return 0
+              let centroid = centroid(of: cgImage) else {
+            return .zero
         }
 
-        let normalized = (centroidX / CGFloat(max(cgImage.width, 1))) - 0.5
-        let maxShift = max(settings.borderThickness, 6) * 0.45 * settings.effectStrength
-        return normalized * maxShift
+        let normalizedX = (centroid.x / CGFloat(max(cgImage.width, 1))) - 0.5
+        let normalizedY = (centroid.y / CGFloat(max(cgImage.height, 1))) - 0.5
+        let maxShiftX = max(settings.borderThickness, 6) * 0.45 * settings.effectStrength
+        let maxShiftY = max(settings.topBottomBorderThickness, 6) * 0.45 * settings.effectStrength
+        return CGPoint(
+            x: normalizedX * maxShiftX,
+            y: -normalizedY * maxShiftY
+        )
     }
 
-    private func centroidX(of cgImage: CGImage) -> CGFloat? {
+    private func centroid(of cgImage: CGImage) -> CGPoint? {
         let width = cgImage.width
         let height = cgImage.height
         guard width > 0, height > 0 else { return nil }
@@ -165,6 +178,7 @@ final class SplitDepthRenderer: @unchecked Sendable {
 
         var total: Double = 0
         var weightedX: Double = 0
+        var weightedY: Double = 0
 
         for y in 0..<height {
             let rowStart = y * bytesPerRow
@@ -172,11 +186,15 @@ final class SplitDepthRenderer: @unchecked Sendable {
                 let value = Double(buffer[rowStart + x]) / 255.0
                 total += value
                 weightedX += Double(x) * value
+                weightedY += Double(y) * value
             }
         }
 
         guard total > 0 else { return nil }
-        return CGFloat(weightedX / total)
+        return CGPoint(
+            x: CGFloat(weightedX / total),
+            y: CGFloat(weightedY / total)
+        )
     }
 
     private func preparedForegroundMask(from inputMask: CIImage, extent: CGRect, settings: EffectSettings) -> CIImage {
@@ -255,6 +273,31 @@ final class SplitDepthRenderer: @unchecked Sendable {
         }
 
         return mask.cropped(to: extent)
+    }
+
+    private func horizontalStripeMask(extent: CGRect, settings: EffectSettings) -> CIImage {
+        let barHeight = max(settings.topBottomBorderThickness, 8)
+
+        let topRect = CGRect(
+            x: extent.minX,
+            y: extent.maxY - barHeight,
+            width: extent.width,
+            height: barHeight
+        ).integral
+
+        let bottomRect = CGRect(
+            x: extent.minX,
+            y: extent.minY,
+            width: extent.width,
+            height: barHeight
+        ).integral
+
+        let topBar = CIImage(color: .white).cropped(to: topRect)
+        let bottomBar = CIImage(color: .white).cropped(to: bottomRect)
+
+        return topBar
+            .composited(over: bottomBar)
+            .cropped(to: extent)
     }
 
     private func smooth(mask: CIImage, with previous: CIImage?, factor: Double, extent: CGRect) -> CIImage {
