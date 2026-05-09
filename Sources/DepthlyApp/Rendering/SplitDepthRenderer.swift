@@ -53,9 +53,10 @@ final class SplitDepthRenderer: @unchecked Sendable {
         }
 
         let stabilizedDepth = stabilizedDepthMap(from: depthMap, extent: extent, settings: settings)
-        let mask = foregroundMask(from: stabilizedDepth, extent: extent, settings: settings)
+        let depthForMask = settings.invertDepthMask ? inverted(image: stabilizedDepth, extent: extent) : stabilizedDepth
+        let mask = foregroundMask(from: depthForMask, extent: extent, settings: settings)
         let smoothedMask = smooth(mask: mask, with: previousMask, factor: settings.temporalSmoothing, extent: extent)
-        previousRawDepth = stabilizedDepth
+        previousRawDepth = depthForMask
         previousMask = smoothedMask
 
         return renderForegroundOverlay(frameImage: frameImage, mask: smoothedMask, settings: settings)
@@ -64,7 +65,7 @@ final class SplitDepthRenderer: @unchecked Sendable {
     private func renderForegroundOverlay(frameImage: CIImage, mask: CIImage, settings: EffectSettings) -> CGImage? {
         let extent = frameImage.extent.integral
         let canvasExtent = extent
-        let maskForForeground = settings.invertDepthMask ? inverted(mask: mask, extent: extent) : mask
+        let maskForForeground = mask
         if settings.showMaskPreview {
             let preview = debugMaskPreview(mask: maskForForeground, depthMap: previousRawDepth, extent: extent)
             return context.createCGImage(preview, from: canvasExtent)
@@ -134,8 +135,8 @@ final class SplitDepthRenderer: @unchecked Sendable {
         return highlightedMask.composited(over: depthBackground.cropped(to: extent))
     }
 
-    private func inverted(mask: CIImage, extent: CGRect) -> CIImage {
-        mask
+    private func inverted(image: CIImage, extent: CGRect) -> CIImage {
+        image
             .applyingFilter("CIColorInvert")
             .cropped(to: extent)
     }

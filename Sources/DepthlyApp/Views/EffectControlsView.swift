@@ -145,7 +145,7 @@ struct EffectControlsView: View {
                 suffix: "\(Int(settings.foregroundDisplacement)) px"
             )
 
-            Toggle("Invert depth mask", isOn: $settings.invertDepthMask)
+            Toggle("Invert depth polarity", isOn: $settings.invertDepthMask)
             Toggle("Debug mask preview", isOn: $showMaskPreview)
         }
     }

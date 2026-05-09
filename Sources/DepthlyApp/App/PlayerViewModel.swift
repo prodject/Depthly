@@ -459,6 +459,7 @@ final class PlayerViewModel: ObservableObject {
                     self.isLoadingDepthModel = false
                     self.isDepthModelReady = true
                     self.loadedDepthModelID = self.selectedDepthModelID
+                    self.effectSettings.invertDepthMask = true
                     self.didLoadDepthModelOnce = true
                     self.scheduleDepthPreparationIfPossible()
                 }
