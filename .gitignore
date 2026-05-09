@@ -34,6 +34,8 @@ playground.xcworkspace
 
 .build/
 Sources/DepthlyApp/Resources/Models/*
+!Sources/DepthlyApp/Resources/.gitkeep
+!Sources/DepthlyApp/Resources/Models/.gitkeep
 
 # CocoaPods
 #
