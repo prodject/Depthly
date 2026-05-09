@@ -197,8 +197,20 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private static func makeDefaultDepthEstimator() -> any DepthEstimating {
+        if let envPath = ProcessInfo.processInfo.environment["DEPTHLY_MODEL_PATH"] {
+            let url = URL(fileURLWithPath: envPath)
+            if let estimator = try? CoreMLDepthEstimator(compiledModelURL: url) {
+                return estimator
+            }
+        }
+
         for `extension` in ["mlmodelc", "mlmodel"] {
-            if let url = Bundle.main.url(forResource: "DepthAnythingV2Small", withExtension: `extension`),
+            if let url = Bundle.module.url(forResource: "DepthAnythingV2SmallF16", withExtension: `extension`, subdirectory: "Models"),
+               let estimator = try? CoreMLDepthEstimator(compiledModelURL: url) {
+                return estimator
+            }
+
+            if let url = Bundle.module.url(forResource: "DepthAnythingV2Small", withExtension: `extension`, subdirectory: "Models"),
                let estimator = try? CoreMLDepthEstimator(compiledModelURL: url) {
                 return estimator
             }

@@ -20,6 +20,24 @@ swift build
 
 If you add a compiled Core ML model, place it in the app bundle or wire it into `PlayerViewModel.makeDefaultDepthEstimator()`.
 
+### Recommended local model path
+
+Download `DepthAnythingV2SmallF16.mlpackage` from Apple’s Hugging Face repo and place it at:
+
+`Sources/DepthlyApp/Resources/Models/DepthAnythingV2SmallF16.mlpackage`
+
+Then build with:
+
+```bash
+swift build
+```
+
+Optional override:
+
+```bash
+DEPTHLY_MODEL_PATH=/absolute/path/to/DepthAnythingV2SmallF16.mlpackage swift build
+```
+
 ## Architecture
 
 - `DepthlyApp` - SwiftUI entry point.

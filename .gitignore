@@ -30,6 +30,7 @@ playground.xcworkspace
 # .swiftpm
 
 .build/
+Sources/DepthlyApp/Resources/Models/*
 
 # CocoaPods
 #

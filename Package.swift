@@ -14,6 +14,9 @@ let package = Package(
         .executableTarget(
             name: "DepthlyApp",
             path: "Sources/DepthlyApp",
+            resources: [
+                .copy("Resources")
+            ],
             swiftSettings: [
                 .define("CI_SILENCE_GL_DEPRECATION")
             ]
