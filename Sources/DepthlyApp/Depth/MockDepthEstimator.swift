@@ -99,6 +99,16 @@ final class MockForegroundMaskEstimator: ForegroundMaskEstimating, @unchecked Se
             .applyingFilter("CIGaussianBlur", parameters: [
                 kCIInputRadiusKey: 6.0
             ])
+            .applyingFilter("CIColorControls", parameters: [
+                kCIInputContrastKey: 2.35,
+                kCIInputBrightnessKey: -0.10
+            ])
+            .applyingFilter("CIMorphologyMaximum", parameters: [
+                kCIInputRadiusKey: 7.0
+            ])
+            .applyingFilter("CIGaussianBlur", parameters: [
+                kCIInputRadiusKey: 8.0
+            ])
             .cropped(to: extent)
 
         return combined

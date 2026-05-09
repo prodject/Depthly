@@ -58,10 +58,19 @@ final class SplitDepthRenderer: @unchecked Sendable {
         let stripeMask = verticalStripeMask(extent: extent, settings: settings)
         let expandedStripeMask = stripeMask
             .applyingFilter("CIMorphologyMaximum", parameters: [
-                kCIInputRadiusKey: max(2.0, settings.edgeSoftness * 0.7)
+                kCIInputRadiusKey: max(4.0, settings.borderThickness * 0.55)
             ])
             .applyingFilter("CIGaussianBlur", parameters: [
-                kCIInputRadiusKey: max(1.0, settings.edgeSoftness * 0.35)
+                kCIInputRadiusKey: max(1.0, settings.edgeSoftness * 0.4)
+            ])
+            .cropped(to: extent)
+
+        let expandedForegroundMask = mask
+            .applyingFilter("CIMorphologyMaximum", parameters: [
+                kCIInputRadiusKey: max(3.0, settings.borderThickness * 0.20)
+            ])
+            .applyingFilter("CIGaussianBlur", parameters: [
+                kCIInputRadiusKey: max(1.0, settings.edgeSoftness * 0.45)
             ])
             .cropped(to: extent)
 
@@ -75,7 +84,7 @@ final class SplitDepthRenderer: @unchecked Sendable {
 
         let foreground = frameImage.applyingFilter("CIBlendWithAlphaMask", parameters: [
             kCIInputBackgroundImageKey: transparentBackground,
-            kCIInputMaskImageKey: mask
+            kCIInputMaskImageKey: expandedForegroundMask
         ])
 
         let bandLimitedForeground = foreground.applyingFilter("CIBlendWithAlphaMask", parameters: [
@@ -84,10 +93,10 @@ final class SplitDepthRenderer: @unchecked Sendable {
         ])
 
         let foregroundShift = measuredForegroundShift(from: mask, extent: extent, settings: settings)
-        let horizontalScale = 1.0 + (0.045 * settings.effectStrength)
-        let horizontalPush = foregroundShift + max(settings.foregroundDisplacement, 0) * settings.effectStrength * 0.18
+        let horizontalScale = 1.0 + (0.09 * settings.effectStrength)
+        let horizontalPush = foregroundShift + max(settings.foregroundDisplacement, 0) * settings.effectStrength * 0.28
         let transform = CGAffineTransform(translationX: canvasExtent.midX, y: canvasExtent.midY)
-            .scaledBy(x: horizontalScale, y: 1.0)
+            .scaledBy(x: horizontalScale, y: 1.02)
             .translatedBy(x: -extent.midX + horizontalPush, y: -extent.midY)
 
         let transformedForeground = bandLimitedForeground.transformed(by: transform)
