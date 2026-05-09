@@ -6,6 +6,12 @@ import SwiftUI
 
 @MainActor
 final class PlayerViewModel: ObservableObject {
+    private struct RenderResult: @unchecked Sendable {
+        let image: CGImage?
+        let depth: CIImage?
+        let frameBuffer: CVPixelBuffer
+    }
+
     @Published var player: AVPlayer = AVPlayer()
     @Published var overlayImage: CGImage?
     @Published var isEffectEnabled = true
@@ -329,9 +335,9 @@ final class PlayerViewModel: ObservableObject {
 
     private func consume(frame sample: VideoFrameProvider.FrameSample) async {
         currentTime = sample.time.seconds.isFinite ? sample.time.seconds : currentTime
-        currentFrameBuffer = sample.pixelBuffer
 
         guard isEffectEnabled else {
+            currentFrameBuffer = sample.pixelBuffer
             overlayImage = nil
             return
         }
@@ -352,11 +358,12 @@ final class PlayerViewModel: ObservableObject {
             }
 
             let image = renderer.renderOverlay(frame: frameCopy, depthMap: depth, settings: settings)
-            return (image, depth)
+            return RenderResult(image: image, depth: depth, frameBuffer: frameCopy)
         }.value
 
-        overlayImage = result.0
-        lastDepthMap = result.1
+        overlayImage = result.image
+        lastDepthMap = result.depth
+        currentFrameBuffer = result.frameBuffer
         overlayRevision &+= 1
         isProcessingFrame = false
     }

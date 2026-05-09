@@ -15,13 +15,7 @@ struct MainView: View {
         ZStack {
             backdrop
 
-            VideoPlayerContainer(
-                player: viewModel.player,
-                overlayImage: viewModel.overlayImage,
-                videoSize: viewModel.videoSize,
-                borderThickness: viewModel.effectSettings.borderThickness,
-                isEffectEnabled: viewModel.isEffectEnabled
-            )
+            MetalVideoSurface(viewModel: viewModel)
             .ignoresSafeArea()
 
             vignette
