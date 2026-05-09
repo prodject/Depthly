@@ -26,8 +26,8 @@ struct MainView: View {
 
             vignette
 
-            if viewModel.isBufferingDepth {
-                bufferingOverlay
+            if viewModel.isLoadingDepthModel || viewModel.isBufferingDepth {
+                preparationOverlay
             }
 
             if !hasVideoLoaded {
@@ -89,8 +89,8 @@ struct MainView: View {
                 glassButton(title: viewModel.isPlaying ? "Pause" : "Play", systemImage: viewModel.isPlaying ? "pause.fill" : "play.fill") {
                     viewModel.togglePlayPause()
                 }
-                .disabled(viewModel.isBufferingDepth)
-                .opacity(viewModel.isBufferingDepth ? 0.55 : 1.0)
+                .disabled(!viewModel.canStartPlayback)
+                .opacity(viewModel.canStartPlayback ? 1.0 : 0.55)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Volume")
@@ -201,25 +201,30 @@ struct MainView: View {
         }
     }
 
-    private var bufferingOverlay: some View {
+    private var preparationOverlay: some View {
         ZStack {
             Color.black.opacity(0.32)
                 .ignoresSafeArea()
 
             VStack(spacing: 14) {
-                ProgressView(value: viewModel.bufferProgress)
-                    .progressViewStyle(.linear)
-                    .frame(width: 220)
+                if viewModel.isBufferingDepth {
+                    ProgressView(value: viewModel.bufferProgress)
+                        .progressViewStyle(.linear)
+                        .frame(width: 220)
+                } else {
+                    ProgressView()
+                        .controlSize(.regular)
+                }
 
                 VStack(spacing: 4) {
-                    Text("Buffering video")
+                    Text(viewModel.isLoadingDepthModel ? "Loading model" : "Buffering depth")
                         .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    Text(viewModel.bufferStatus)
+                    Text(viewModel.isLoadingDepthModel ? viewModel.depthModelStatus : viewModel.bufferStatus)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
-                Text("Playback becomes available when the local depth buffer is ready.")
+                Text(viewModel.playbackLockReason)
                     .font(.caption2)
                     .foregroundStyle(.secondary.opacity(0.9))
             }
@@ -229,7 +234,7 @@ struct MainView: View {
             .frame(maxWidth: 320)
         }
         .transition(.opacity.combined(with: .scale))
-        .animation(.easeInOut(duration: 0.2), value: viewModel.isBufferingDepth)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.isBufferingDepth || viewModel.isLoadingDepthModel)
     }
 
     private func iconButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {

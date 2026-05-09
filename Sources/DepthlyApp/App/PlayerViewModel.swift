@@ -30,6 +30,7 @@ final class PlayerViewModel: ObservableObject {
     @Published var selectedDepthModelID: String = DepthModelOption.mock.id
     @Published var depthModelStatus: String = "Mock depth"
     @Published var isLoadingDepthModel = false
+    @Published private(set) var isDepthModelReady = false
     @Published var isBufferingDepth = false
     @Published var bufferProgress: Double = 0
     @Published var bufferStatus: String = "Buffer not prepared"
@@ -52,6 +53,8 @@ final class PlayerViewModel: ObservableObject {
     private let inferenceInterval: TimeInterval = 0.12
     private let bufferedSampleInterval: TimeInterval = 0.25
     private var bufferedDepthSamples: [BufferedDepthSample] = []
+    private var loadedDepthModelID: String?
+    private var pendingAutoBuffer = false
 
     init(depthEstimator: (any DepthEstimating)? = nil) {
         availableDepthModels = DepthModelCatalog.discoverModels()
@@ -63,6 +66,8 @@ final class PlayerViewModel: ObservableObject {
             self.depthEstimator = depthEstimator
             selectedDepthModelID = DepthModelOption.mock.id
             depthModelStatus = "Injected estimator"
+            isDepthModelReady = true
+            loadedDepthModelID = DepthModelOption.mock.id
         }
 
         frameProvider.onFrameAvailable = { [weak self] sample in
@@ -95,6 +100,7 @@ final class PlayerViewModel: ObservableObject {
         stopFramePipeline()
         invalidateDepthBuffer(status: "Buffer not prepared")
         currentVideoURL = url
+        pendingAutoBuffer = true
 
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
@@ -107,8 +113,7 @@ final class PlayerViewModel: ObservableObject {
 
         installTimeObserver()
         statusText = "Preparing \(url.lastPathComponent)..."
-
-        prepareDepthBuffer()
+        scheduleDepthPreparationIfPossible()
 
         Task {
             do {
@@ -140,14 +145,30 @@ final class PlayerViewModel: ObservableObject {
             return
         }
 
+        guard canPrepareDepthBufferNow else {
+            pendingAutoBuffer = true
+            if isLoadingDepthModel {
+                statusText = "Loading depth model before buffering..."
+                bufferStatus = "Waiting for depth model"
+            } else if !isDepthModelReady {
+                statusText = "Depth model is not ready."
+                bufferStatus = "Depth model not ready"
+            } else {
+                statusText = "Depth buffer is not available yet."
+            }
+            return
+        }
+
         bufferTask?.cancel()
         player.pause()
         isPlaying = false
         isBufferingDepth = true
+        pendingAutoBuffer = false
         bufferProgress = 0
         bufferStatus = "Preparing depth buffer..."
         isBufferedDepthReady = false
         bufferedDepthSamples.removeAll()
+        statusText = "Buffering depth with \(depthModelDisplayName)..."
 
         let estimator = depthEstimator
         let sampleInterval = bufferedSampleInterval
@@ -221,7 +242,7 @@ final class PlayerViewModel: ObservableObject {
                     self.isBufferingDepth = false
                     self.bufferProgress = 1
                     self.bufferStatus = buffered.isEmpty ? "Buffering finished, no samples" : "Depth buffer ready"
-                    self.statusText = buffered.isEmpty ? "Buffering finished, no depth samples" : "Depth buffer prepared"
+                    self.statusText = buffered.isEmpty ? "Buffering finished, no depth samples" : "Depth buffer prepared. Playback ready."
                 }
             } catch {
                 await MainActor.run {
@@ -234,7 +255,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func togglePlayPause() {
-        guard !isBufferingDepth else { return }
+        guard canStartPlayback else { return }
 
         if player.rate == 0 {
             player.play()
@@ -261,6 +282,7 @@ final class PlayerViewModel: ObservableObject {
         selectedDepthModelID = id
         UserDefaults.standard.set(id, forKey: Self.selectedDepthModelDefaultsKey)
         invalidateDepthBuffer(status: "Buffer invalidated by model change")
+        pendingAutoBuffer = currentVideoURL != nil
         Task { [weak self] in
             await self?.loadDepthModelIfNeeded(force: true)
         }
@@ -274,6 +296,11 @@ final class PlayerViewModel: ObservableObject {
             bufferStatus = isBufferedDepthReady ? "Buffered playback ready" : "Buffered mode selected"
         } else {
             bufferStatus = isBufferedDepthReady ? "Auto mode using buffer" : "Auto mode using live inference"
+        }
+
+        if currentVideoURL != nil {
+            pendingAutoBuffer = mode != .live
+            scheduleDepthPreparationIfPossible()
         }
     }
 
@@ -316,6 +343,39 @@ final class PlayerViewModel: ObservableObject {
         }
 
         return "\(mode) · \(modelName) · \(bufferName)"
+    }
+
+    var canStartPlayback: Bool {
+        guard currentVideoURL != nil else { return false }
+        guard !isLoadingDepthModel, !isBufferingDepth else { return false }
+        guard !isEffectEnabled || isDepthModelReady else { return false }
+
+        if !isEffectEnabled {
+            return true
+        }
+
+        switch processingMode {
+        case .live:
+            return isDepthModelReady
+        case .auto, .buffered:
+            return isBufferedDepthReady
+        }
+    }
+
+    var playbackLockReason: String {
+        if isLoadingDepthModel {
+            return "Loading depth model..."
+        }
+        if isBufferingDepth {
+            return "Building depth buffer..."
+        }
+        if isEffectEnabled && !isDepthModelReady {
+            return "Depth model is not ready."
+        }
+        if isEffectEnabled && processingMode != .live && !isBufferedDepthReady {
+            return "Depth buffer is not ready."
+        }
+        return "Playback ready."
     }
 
     private func consume(frame sample: VideoFrameProvider.FrameSample) async {
@@ -435,12 +495,21 @@ final class PlayerViewModel: ObservableObject {
             depthEstimator = MockDepthEstimator()
             depthModelStatus = selected.displayName
             isLoadingDepthModel = false
+            isDepthModelReady = true
+            loadedDepthModelID = selected.id
             didLoadDepthModelOnce = true
+            scheduleDepthPreparationIfPossible()
             return
         }
 
         isLoadingDepthModel = true
+        isDepthModelReady = false
+        loadedDepthModelID = nil
         depthModelStatus = "Loading \(selected.displayName)..."
+        if currentVideoURL != nil {
+            statusText = "Loading \(selected.displayName)..."
+            bufferStatus = "Waiting for depth model"
+        }
 
         modelLoadTask = Task.detached(priority: .userInitiated) { [fileURL, displayName = selected.displayName, generation] in
             do {
@@ -450,18 +519,67 @@ final class PlayerViewModel: ObservableObject {
                     self.depthEstimator = estimator
                     self.depthModelStatus = "Core ML · \(displayName)"
                     self.isLoadingDepthModel = false
+                    self.isDepthModelReady = true
+                    self.loadedDepthModelID = self.selectedDepthModelID
                     self.didLoadDepthModelOnce = true
+                    self.scheduleDepthPreparationIfPossible()
                 }
             } catch {
                 await MainActor.run {
                     guard self.depthModelLoadGeneration == generation else { return }
                     self.depthEstimator = MockDepthEstimator()
                     self.depthModelStatus = "Failed to load \(displayName)"
-                    self.statusText = "Model load error: \(error.localizedDescription)"
                     self.isLoadingDepthModel = false
+                    self.isDepthModelReady = false
+                    self.loadedDepthModelID = nil
+                    self.pendingAutoBuffer = false
+                    self.bufferStatus = "Model load failed"
+                    self.statusText = "Model load error: \(error.localizedDescription)"
                     self.didLoadDepthModelOnce = true
                 }
             }
+        }
+    }
+
+    private var canPrepareDepthBufferNow: Bool {
+        guard currentVideoURL != nil else { return false }
+        guard !isLoadingDepthModel else { return false }
+        guard isDepthModelReady else { return false }
+        guard loadedDepthModelID == selectedDepthModelID else { return false }
+        guard processingMode != .live else { return false }
+        return true
+    }
+
+    private var depthModelDisplayName: String {
+        availableDepthModels.first(where: { $0.id == selectedDepthModelID })?.displayName ?? depthModelStatus
+    }
+
+    private func scheduleDepthPreparationIfPossible() {
+        guard currentVideoURL != nil else { return }
+
+        if processingMode == .live {
+            pendingAutoBuffer = false
+            if isLoadingDepthModel {
+                statusText = "Loading depth model..."
+            } else if isDepthModelReady {
+                statusText = "Depth model ready. Playback ready."
+            }
+            return
+        }
+
+        guard pendingAutoBuffer else { return }
+
+        if canPrepareDepthBufferNow {
+            prepareDepthBuffer()
+            return
+        }
+
+        if isLoadingDepthModel {
+            statusText = "Loading depth model before buffering..."
+            bufferStatus = "Waiting for depth model"
+        } else if !isDepthModelReady {
+            statusText = "Depth model is not ready."
+            bufferStatus = "Depth model not ready"
         }
     }
 
