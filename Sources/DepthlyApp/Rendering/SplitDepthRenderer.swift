@@ -56,21 +56,12 @@ final class SplitDepthRenderer: @unchecked Sendable {
         }
 
         let stripeMask = verticalStripeMask(extent: extent, settings: settings)
-        let expandedStripeMask = stripeMask
+        let cutoutMask = mask
             .applyingFilter("CIMorphologyMaximum", parameters: [
-                kCIInputRadiusKey: max(4.0, settings.borderThickness * 0.55)
+                kCIInputRadiusKey: max(1.0, settings.borderThickness * 0.10)
             ])
             .applyingFilter("CIGaussianBlur", parameters: [
-                kCIInputRadiusKey: max(1.0, settings.edgeSoftness * 0.4)
-            ])
-            .cropped(to: extent)
-
-        let expandedForegroundMask = mask
-            .applyingFilter("CIMorphologyMaximum", parameters: [
-                kCIInputRadiusKey: max(3.0, settings.borderThickness * 0.20)
-            ])
-            .applyingFilter("CIGaussianBlur", parameters: [
-                kCIInputRadiusKey: max(1.0, settings.edgeSoftness * 0.45)
+                kCIInputRadiusKey: max(0.75, settings.edgeSoftness * 0.22)
             ])
             .cropped(to: extent)
 
@@ -82,26 +73,23 @@ final class SplitDepthRenderer: @unchecked Sendable {
                 kCIInputMaskImageKey: stripeMask
             ])
 
-        let foreground = frameImage.applyingFilter("CIBlendWithAlphaMask", parameters: [
-            kCIInputBackgroundImageKey: transparentBackground,
-            kCIInputMaskImageKey: expandedForegroundMask
-        ])
-
-        let bandLimitedForeground = foreground.applyingFilter("CIBlendWithAlphaMask", parameters: [
-            kCIInputBackgroundImageKey: transparentBackground,
-            kCIInputMaskImageKey: expandedStripeMask
-        ])
-
         let foregroundShift = measuredForegroundShift(from: mask, extent: extent, settings: settings)
-        let horizontalScale = 1.0 + (0.09 * settings.effectStrength)
-        let horizontalPush = foregroundShift + max(settings.foregroundDisplacement, 0) * settings.effectStrength * 0.28
+        let horizontalScale = 1.0 + (0.018 * settings.effectStrength)
+        let horizontalPush = foregroundShift + max(settings.foregroundDisplacement, 0) * settings.effectStrength * 0.08
         let transform = CGAffineTransform(translationX: canvasExtent.midX, y: canvasExtent.midY)
-            .scaledBy(x: horizontalScale, y: 1.02)
+            .scaledBy(x: horizontalScale, y: 1.0)
             .translatedBy(x: -extent.midX + horizontalPush, y: -extent.midY)
 
-        let transformedForeground = bandLimitedForeground.transformed(by: transform)
-        let composited = transformedForeground.composited(over: bars)
-        return context.createCGImage(composited, from: canvasExtent)
+        let transformedCutoutMask = cutoutMask
+            .transformed(by: transform)
+            .cropped(to: extent)
+
+        let overlay = transparentBackground.applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: bars,
+            kCIInputMaskImageKey: transformedCutoutMask
+        ])
+
+        return context.createCGImage(overlay, from: canvasExtent)
     }
 
     private func debugMaskPreview(mask: CIImage, sourceMask: CIImage?, frameImage: CIImage, extent: CGRect) -> CIImage {

@@ -40,8 +40,8 @@ final class MockForegroundMaskEstimator: ForegroundMaskEstimating, @unchecked Se
             .cropped(to: extent)
             .applyingFilter("CIRadialGradient", parameters: [
                 "inputCenter": CIVector(x: extent.midX, y: extent.midY * 1.08),
-                "inputRadius0": extent.width * 0.16,
-                "inputRadius1": max(extent.width, extent.height) * 0.62,
+                "inputRadius0": extent.width * 0.10,
+                "inputRadius1": max(extent.width, extent.height) * 0.42,
                 "inputColor0": CIColor(red: 1, green: 1, blue: 1, alpha: 1),
                 "inputColor1": CIColor(red: 0, green: 0, blue: 0, alpha: 1)
             ])
@@ -56,7 +56,7 @@ final class MockForegroundMaskEstimator: ForegroundMaskEstimating, @unchecked Se
                 "inputColor1": CIColor(red: 0.28, green: 0.28, blue: 0.28, alpha: 1)
             ])
             .applyingFilter("CIColorControls", parameters: [
-                kCIInputContrastKey: 1.25
+                kCIInputContrastKey: 1.45
             ])
             .cropped(to: extent)
 
@@ -104,10 +104,10 @@ final class MockForegroundMaskEstimator: ForegroundMaskEstimating, @unchecked Se
                 kCIInputBrightnessKey: -0.10
             ])
             .applyingFilter("CIMorphologyMaximum", parameters: [
-                kCIInputRadiusKey: 7.0
+                kCIInputRadiusKey: 3.0
             ])
             .applyingFilter("CIGaussianBlur", parameters: [
-                kCIInputRadiusKey: 8.0
+                kCIInputRadiusKey: 4.0
             ])
             .cropped(to: extent)
 
