@@ -159,6 +159,10 @@ struct MainView: View {
                         get: { viewModel.processingMode },
                         set: { viewModel.setProcessingMode($0) }
                     ),
+                    showMaskPreview: Binding(
+                        get: { viewModel.effectSettings.showMaskPreview },
+                        set: { viewModel.effectSettings.showMaskPreview = $0 }
+                    ),
                     availableDepthModels: viewModel.availableDepthModels,
                     selectedDepthModelID: viewModel.selectedDepthModelID,
                     depthModelStatus: viewModel.depthModelStatus,

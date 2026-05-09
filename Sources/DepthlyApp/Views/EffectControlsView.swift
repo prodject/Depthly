@@ -4,6 +4,7 @@ struct EffectControlsView: View {
     @Binding var isEffectEnabled: Bool
     @Binding var settings: EffectSettings
     @Binding var processingMode: PlayerViewModel.ProcessingMode
+    @Binding var showMaskPreview: Bool
     let availableDepthModels: [DepthModelOption]
     let selectedDepthModelID: String
     let depthModelStatus: String
@@ -147,6 +148,19 @@ struct EffectControlsView: View {
                 range: 0.0...1.0,
                 suffix: String(format: "%.2f", settings.temporalSmoothing)
             )
+
+            SliderRow(
+                title: "Foreground displacement",
+                value: Binding(
+                    get: { Double(settings.foregroundDisplacement) },
+                    set: { settings.foregroundDisplacement = CGFloat($0) }
+                ),
+                range: 0.0...120.0,
+                suffix: "\(Int(settings.foregroundDisplacement)) px"
+            )
+
+            Toggle("Invert depth mask", isOn: $settings.invertDepthMask)
+            Toggle("Debug mask preview", isOn: $showMaskPreview)
         }
     }
 }

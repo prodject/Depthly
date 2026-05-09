@@ -45,20 +45,25 @@ final class SplitDepthRenderer: @unchecked Sendable {
         let transparentBackground = CIImage(color: .clear).cropped(to: canvasExtent)
         let foregroundShift = measuredForegroundShift(from: mask, extent: extent, settings: settings)
         let background = renderStripedBackground(frameImage: frameImage, extent: extent, settings: settings, foregroundShift: foregroundShift)
+        let maskForForeground = settings.invertDepthMask ? inverted(mask: mask, extent: extent) : mask
+        let debugMask = settings.showMaskPreview ? maskPreview(mask: maskForForeground, extent: extent) : nil
 
         let foreground = frameImage.applyingFilter("CIBlendWithAlphaMask", parameters: [
             kCIInputBackgroundImageKey: transparentBackground,
-            kCIInputMaskImageKey: mask
+            kCIInputMaskImageKey: maskForForeground
         ])
 
         let horizontalScale = 1.0 + (0.12 * settings.effectStrength)
-        let horizontalPush = foregroundShift + max(settings.borderThickness, 0) * 0.08 * settings.effectStrength
+        let horizontalPush = foregroundShift + max(settings.foregroundDisplacement, 0) * settings.effectStrength * 0.08
         let transform = CGAffineTransform(translationX: canvasExtent.midX, y: canvasExtent.midY)
             .scaledBy(x: horizontalScale, y: 1.0)
             .translatedBy(x: -extent.midX + horizontalPush, y: -extent.midY)
 
         let transformedForeground = foreground.transformed(by: transform)
-        let composited = transformedForeground.composited(over: background)
+        var composited = transformedForeground.composited(over: background)
+        if let debugMask {
+            composited = debugMask.composited(over: composited)
+        }
 
         return context.createCGImage(composited, from: canvasExtent)
     }
@@ -114,6 +119,25 @@ final class SplitDepthRenderer: @unchecked Sendable {
 
     private func renderBarStripe(in rect: CGRect) -> CIImage {
         CIImage(color: CIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)).cropped(to: rect)
+    }
+
+    private func maskPreview(mask: CIImage, extent: CGRect) -> CIImage {
+        let preview = mask
+            .applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 1, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: 1, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: 1, w: 0),
+                "inputAVector": CIVector(x: 1, y: 1, z: 1, w: 0),
+                "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 0)
+            ])
+            .cropped(to: extent)
+        return preview
+    }
+
+    private func inverted(mask: CIImage, extent: CGRect) -> CIImage {
+        mask
+            .applyingFilter("CIColorInvert")
+            .cropped(to: extent)
     }
 
     private func measuredForegroundShift(from mask: CIImage, extent: CGRect, settings: EffectSettings) -> CGFloat {
