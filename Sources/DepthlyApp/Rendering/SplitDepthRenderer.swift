@@ -42,11 +42,15 @@ final class SplitDepthRenderer: @unchecked Sendable {
     private func renderForegroundOverlay(frameImage: CIImage, mask: CIImage, settings: EffectSettings) -> CGImage? {
         let extent = frameImage.extent.integral
         let canvasExtent = extent
-        let transparentBackground = CIImage(color: .clear).cropped(to: canvasExtent)
         let foregroundShift = measuredForegroundShift(from: mask, extent: extent, settings: settings)
         let background = renderStripedBackground(frameImage: frameImage, extent: extent, settings: settings, foregroundShift: foregroundShift)
         let maskForForeground = settings.invertDepthMask ? inverted(mask: mask, extent: extent) : mask
-        let debugMask = settings.showMaskPreview ? maskPreview(mask: maskForForeground, extent: extent) : nil
+        if settings.showMaskPreview {
+            let preview = debugMaskPreview(mask: maskForForeground, extent: extent)
+            return context.createCGImage(preview, from: canvasExtent)
+        }
+
+        let transparentBackground = CIImage(color: .clear).cropped(to: canvasExtent)
 
         let foreground = frameImage.applyingFilter("CIBlendWithAlphaMask", parameters: [
             kCIInputBackgroundImageKey: transparentBackground,
@@ -60,11 +64,7 @@ final class SplitDepthRenderer: @unchecked Sendable {
             .translatedBy(x: -extent.midX + horizontalPush, y: -extent.midY)
 
         let transformedForeground = foreground.transformed(by: transform)
-        var composited = transformedForeground.composited(over: background)
-        if let debugMask {
-            composited = debugMask.composited(over: composited)
-        }
-
+        let composited = transformedForeground.composited(over: background)
         return context.createCGImage(composited, from: canvasExtent)
     }
 
@@ -121,17 +121,24 @@ final class SplitDepthRenderer: @unchecked Sendable {
         CIImage(color: CIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)).cropped(to: rect)
     }
 
-    private func maskPreview(mask: CIImage, extent: CGRect) -> CIImage {
-        let preview = mask
-            .applyingFilter("CIColorMatrix", parameters: [
-                "inputRVector": CIVector(x: 1, y: 0, z: 0, w: 0),
-                "inputGVector": CIVector(x: 0, y: 1, z: 0, w: 0),
-                "inputBVector": CIVector(x: 0, y: 0, z: 1, w: 0),
-                "inputAVector": CIVector(x: 1, y: 1, z: 1, w: 0),
-                "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 0)
+    private func debugMaskPreview(mask: CIImage, extent: CGRect) -> CIImage {
+        let background = CIImage(color: CIColor(red: 0.03, green: 0.04, blue: 0.05, alpha: 1.0))
+            .cropped(to: extent)
+
+        let maskLuminance = mask
+            .applyingFilter("CIColorControls", parameters: [
+                kCIInputSaturationKey: 0.0,
+                kCIInputContrastKey: 1.35,
+                kCIInputBrightnessKey: 0.03
             ])
             .cropped(to: extent)
-        return preview
+
+        let colorized = maskLuminance.applyingFilter("CIFalseColor", parameters: [
+            "inputColor0": CIColor(red: 0.08, green: 0.10, blue: 0.15, alpha: 1.0),
+            "inputColor1": CIColor(red: 1.0, green: 0.95, blue: 0.82, alpha: 1.0)
+        ])
+
+        return colorized.composited(over: background)
     }
 
     private func inverted(mask: CIImage, extent: CGRect) -> CIImage {

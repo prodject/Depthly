@@ -99,14 +99,16 @@ final class PlayerViewModel: ObservableObject {
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
         player.replaceCurrentItem(with: item)
-        player.playImmediately(atRate: 1.0)
-        isPlaying = true
+        player.pause()
+        isPlaying = false
 
         frameProvider.attach(to: item)
         frameProvider.start()
 
         installTimeObserver()
-        statusText = url.lastPathComponent
+        statusText = "Preparing \(url.lastPathComponent)..."
+
+        prepareDepthBuffer()
 
         Task {
             do {
@@ -232,6 +234,8 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func togglePlayPause() {
+        guard !isBufferingDepth else { return }
+
         if player.rate == 0 {
             player.play()
             isPlaying = true
