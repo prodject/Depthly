@@ -8,6 +8,11 @@ struct EffectControlsView: View {
     let depthModelStatus: String
     let isLoadingDepthModel: Bool
     let onSelectDepthModel: (String) -> Void
+    let isBufferingDepth: Bool
+    let bufferProgress: Double
+    let bufferStatus: String
+    let isBufferedDepthReady: Bool
+    let onPrepareBuffer: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -47,6 +52,45 @@ struct EffectControlsView: View {
                     }
                 }
                 .labelsHidden()
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Buffered effect")
+                    Spacer()
+                    Text(bufferStatus)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Button {
+                    onPrepareBuffer()
+                } label: {
+                    HStack(spacing: 8) {
+                        if isBufferingDepth {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+
+                        Text(isBufferingDepth ? "Buffering..." : (isBufferedDepthReady ? "Rebuild buffer" : "Precompute buffer"))
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.white.opacity(0.18))
+                .disabled(isBufferingDepth)
+
+                if isBufferingDepth {
+                    ProgressView(value: bufferProgress)
+                } else if isBufferedDepthReady {
+                    Label("Ready for playback", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Effect will fall back to live inference until the buffer is ready.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             SliderRow(

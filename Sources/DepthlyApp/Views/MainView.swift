@@ -157,6 +157,13 @@ struct MainView: View {
                     isLoadingDepthModel: viewModel.isLoadingDepthModel,
                     onSelectDepthModel: { id in
                         viewModel.selectDepthModel(id: id)
+                    },
+                    isBufferingDepth: viewModel.isBufferingDepth,
+                    bufferProgress: viewModel.bufferProgress,
+                    bufferStatus: viewModel.bufferStatus,
+                    isBufferedDepthReady: viewModel.isBufferedDepthReady,
+                    onPrepareBuffer: {
+                        viewModel.prepareDepthBuffer()
                     }
                 )
                 .padding(18)

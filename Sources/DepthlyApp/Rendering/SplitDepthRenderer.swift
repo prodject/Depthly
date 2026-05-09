@@ -113,13 +113,7 @@ final class SplitDepthRenderer: @unchecked Sendable {
     }
 
     private func renderBarStripe(in rect: CGRect) -> CIImage {
-        let base = CIImage(color: CIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 0.92)).cropped(to: rect)
-        let leftEdge = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 0.09))
-            .cropped(to: CGRect(x: rect.minX, y: rect.minY, width: 1, height: rect.height).integral)
-        let rightEdge = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 0.05))
-            .cropped(to: CGRect(x: rect.maxX - 1, y: rect.minY, width: 1, height: rect.height).integral)
-
-        return rightEdge.composited(over: leftEdge.composited(over: base))
+        CIImage(color: CIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)).cropped(to: rect)
     }
 
     private func measuredForegroundShift(from mask: CIImage, extent: CGRect, settings: EffectSettings) -> CGFloat {

@@ -21,20 +21,28 @@ final class PlayerViewModel: ObservableObject {
     @Published var selectedDepthModelID: String = DepthModelOption.mock.id
     @Published var depthModelStatus: String = "Mock depth"
     @Published var isLoadingDepthModel = false
+    @Published var isBufferingDepth = false
+    @Published var bufferProgress: Double = 0
+    @Published var bufferStatus: String = "Buffer not prepared"
+    @Published var isBufferedDepthReady = false
 
     private let frameProvider = VideoFrameProvider()
     private let renderer = SplitDepthRenderer()
     private let outputRouting = PlaybackOutputRouting()
     private var depthEstimator: any DepthEstimating = MockDepthEstimator()
     private var currentFrameBuffer: CVPixelBuffer?
+    private var currentVideoURL: URL?
     private var isProcessingFrame = false
     private var modelLoadTask: Task<Void, Never>?
+    private var bufferTask: Task<Void, Never>?
     private var didLoadDepthModelOnce = false
     private var depthModelLoadGeneration: Int = 0
     private var timeObserverToken: Any?
     private var lastDepthMap: CIImage?
     private var lastInferenceDate: Date = .distantPast
     private let inferenceInterval: TimeInterval = 0.12
+    private let bufferedSampleInterval: TimeInterval = 0.25
+    private var bufferedDepthSamples: [BufferedDepthSample] = []
 
     init(depthEstimator: (any DepthEstimating)? = nil) {
         availableDepthModels = DepthModelCatalog.discoverModels()
@@ -76,6 +84,8 @@ final class PlayerViewModel: ObservableObject {
 
     func loadVideo(url: URL) {
         stopFramePipeline()
+        invalidateDepthBuffer(status: "Buffer not prepared")
+        currentVideoURL = url
 
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
@@ -113,6 +123,105 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
+    func prepareDepthBuffer() {
+        guard let videoURL = currentVideoURL else {
+            statusText = "Open a video first."
+            return
+        }
+
+        bufferTask?.cancel()
+        player.pause()
+        isPlaying = false
+        isBufferingDepth = true
+        bufferProgress = 0
+        bufferStatus = "Preparing depth buffer..."
+        isBufferedDepthReady = false
+        bufferedDepthSamples.removeAll()
+
+        let estimator = depthEstimator
+        let sampleInterval = bufferedSampleInterval
+
+        bufferTask = Task.detached(priority: .utility) { [videoURL, estimator, sampleInterval] in
+            do {
+                let asset = AVURLAsset(url: videoURL)
+                let duration = try await asset.load(.duration)
+                let durationSeconds = duration.seconds.isFinite ? max(duration.seconds, 0) : 0
+                let tracks = try await asset.loadTracks(withMediaType: .video)
+                guard let videoTrack = tracks.first else {
+                    throw NSError(domain: "Depthly.Buffer", code: 1, userInfo: [NSLocalizedDescriptionKey: "No video track found"])
+                }
+
+                let reader = try AVAssetReader(asset: asset)
+                let outputSettings: [String: Any] = [
+                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+                ]
+                let output = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: outputSettings)
+                output.alwaysCopiesSampleData = false
+                if reader.canAdd(output) {
+                    reader.add(output)
+                } else {
+                    throw NSError(domain: "Depthly.Buffer", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to attach reader output"])
+                }
+
+                guard reader.startReading() else {
+                    throw reader.error ?? NSError(domain: "Depthly.Buffer", code: 3, userInfo: [NSLocalizedDescriptionKey: "Unable to start asset reader"])
+                }
+
+                var buffered: [BufferedDepthSample] = []
+                var nextCaptureTime: Double = 0
+                var lastPublishedProgress: Double = 0
+
+                while reader.status == .reading && !Task.isCancelled {
+                    guard let sampleBuffer = output.copyNextSampleBuffer() else { break }
+                    guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { continue }
+
+                    let sampleTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                    let seconds = sampleTime.seconds
+                    guard seconds.isFinite else { continue }
+                    guard seconds + 0.0001 >= nextCaptureTime else { continue }
+
+                    nextCaptureTime = seconds + sampleInterval
+
+                    if let depthMap = try? await estimator.estimateDepthMap(for: imageBuffer) {
+                        buffered.append(BufferedDepthSample(time: sampleTime, depthMap: depthMap))
+                    }
+
+                    let progress = durationSeconds > 0 ? min(1, seconds / durationSeconds) : 0
+                    if progress - lastPublishedProgress >= 0.04 || progress >= 1.0 {
+                        lastPublishedProgress = progress
+                        await MainActor.run {
+                            self.bufferProgress = progress
+                            self.bufferStatus = "Preparing depth buffer... \(Int(progress * 100))%"
+                        }
+                    }
+                }
+
+                if Task.isCancelled {
+                    await MainActor.run {
+                        self.isBufferingDepth = false
+                        self.bufferStatus = "Buffering cancelled"
+                    }
+                    return
+                }
+
+                await MainActor.run {
+                    self.bufferedDepthSamples = buffered.sorted { $0.time.seconds < $1.time.seconds }
+                    self.isBufferedDepthReady = !buffered.isEmpty
+                    self.isBufferingDepth = false
+                    self.bufferProgress = 1
+                    self.bufferStatus = buffered.isEmpty ? "Buffering finished, no samples" : "Depth buffer ready"
+                    self.statusText = buffered.isEmpty ? "Buffering finished, no depth samples" : "Depth buffer prepared"
+                }
+            } catch {
+                await MainActor.run {
+                    self.isBufferingDepth = false
+                    self.bufferStatus = "Buffering failed"
+                    self.statusText = "Buffer error: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     func togglePlayPause() {
         if player.rate == 0 {
             player.play()
@@ -138,6 +247,7 @@ final class PlayerViewModel: ObservableObject {
     func selectDepthModel(id: String) {
         selectedDepthModelID = id
         UserDefaults.standard.set(id, forKey: Self.selectedDepthModelDefaultsKey)
+        invalidateDepthBuffer(status: "Buffer invalidated by model change")
         Task { [weak self] in
             await self?.loadDepthModelIfNeeded(force: true)
         }
@@ -171,16 +281,19 @@ final class PlayerViewModel: ObservableObject {
         guard !isProcessingFrame else { return }
         isProcessingFrame = true
 
-        let shouldRefreshDepth = Date().timeIntervalSince(lastInferenceDate) >= inferenceInterval
         let frameCopy = sample.pixelBuffer
         let settings = effectSettings
         let depthEstimator = depthEstimator
         let renderer = renderer
         let cachedDepth = lastDepthMap
+        let bufferedDepth = isBufferedDepthReady ? bufferedDepthMap(near: sample.time) : nil
+        let shouldRefreshDepth = bufferedDepth == nil && Date().timeIntervalSince(lastInferenceDate) >= inferenceInterval
 
         let result = await Task.detached(priority: .userInitiated) {
             var depth = cachedDepth
-            if shouldRefreshDepth {
+            if let bufferedDepth {
+                depth = bufferedDepth
+            } else if shouldRefreshDepth {
                 depth = try? await depthEstimator.estimateDepthMap(for: frameCopy)
             }
 
@@ -218,6 +331,38 @@ final class PlayerViewModel: ObservableObject {
         isProcessingFrame = false
         isPlaying = false
         currentFrameBuffer = nil
+        bufferTask?.cancel()
+        bufferTask = nil
+    }
+
+    private func invalidateDepthBuffer(status: String) {
+        bufferTask?.cancel()
+        bufferTask = nil
+        bufferedDepthSamples.removeAll()
+        isBufferedDepthReady = false
+        isBufferingDepth = false
+        bufferProgress = 0
+        bufferStatus = status
+    }
+
+    private func bufferedDepthMap(near time: CMTime) -> CIImage? {
+        guard !bufferedDepthSamples.isEmpty else { return nil }
+
+        let targetSeconds = time.seconds
+        guard targetSeconds.isFinite else { return bufferedDepthSamples.first?.depthMap }
+
+        var bestSample: BufferedDepthSample?
+        var bestDistance = Double.greatestFiniteMagnitude
+
+        for sample in bufferedDepthSamples {
+            let distance = abs(sample.time.seconds - targetSeconds)
+            if distance < bestDistance {
+                bestDistance = distance
+                bestSample = sample
+            }
+        }
+
+        return bestSample?.depthMap
     }
 
     private func loadDepthModelIfNeeded(force: Bool = false) async {
@@ -265,4 +410,9 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private static let selectedDepthModelDefaultsKey = "selectedDepthModelID"
+}
+
+private struct BufferedDepthSample: @unchecked Sendable {
+    let time: CMTime
+    let depthMap: CIImage
 }
