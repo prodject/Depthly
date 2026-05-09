@@ -443,7 +443,7 @@ final class PlayerViewModel: ObservableObject {
                 await MainActor.run {
                     guard self.depthModelLoadGeneration == generation else { return }
                     self.depthEstimator = estimator
-                    self.depthModelStatus = displayName
+                    self.depthModelStatus = "Core ML · \(displayName)"
                     self.isLoadingDepthModel = false
                     self.didLoadDepthModelOnce = true
                 }

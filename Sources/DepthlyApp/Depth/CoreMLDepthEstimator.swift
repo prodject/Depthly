@@ -13,19 +13,20 @@ final class CoreMLDepthEstimator: DepthEstimating, @unchecked Sendable {
 
     init(
         model: MLModel,
-        inputName: String = "image",
+        inputName: String? = nil,
         outputImageProvider: @escaping (MLFeatureProvider) throws -> CIImage
     ) {
         self.model = model
-        self.inputName = inputName
+        self.inputName = inputName ?? Self.defaultImageInputName(for: model) ?? "image"
         self.outputImageProvider = outputImageProvider
     }
 
-    convenience init(modelURL: URL, inputName: String = "image", outputName: String = "depth") async throws {
+    convenience init(modelURL: URL, inputName: String? = nil, outputName: String? = nil) async throws {
         let model = try await CoreMLDepthEstimator.loadModel(at: modelURL)
+        let resolvedOutputName = outputName ?? Self.defaultImageOutputName(for: model) ?? "predicted_depth"
         self.init(model: model, inputName: inputName) { provider in
-            guard let buffer = provider.featureValue(for: outputName)?.imageBufferValue else {
-                throw CoreMLDepthEstimatorError.missingImageOutput(outputName)
+            guard let buffer = provider.featureValue(for: resolvedOutputName)?.imageBufferValue else {
+                throw CoreMLDepthEstimatorError.missingImageOutput(resolvedOutputName)
             }
             return CIImage(cvPixelBuffer: buffer)
         }
@@ -51,5 +52,15 @@ final class CoreMLDepthEstimator: DepthEstimating, @unchecked Sendable {
         ])
         let output = try await model.prediction(from: features)
         return try outputImageProvider(output)
+    }
+
+    private static func defaultImageInputName(for model: MLModel) -> String? {
+        model.modelDescription.inputDescriptionsByName.first { $0.value.type == .image }?.key
+            ?? model.modelDescription.inputDescriptionsByName.keys.first
+    }
+
+    private static func defaultImageOutputName(for model: MLModel) -> String? {
+        model.modelDescription.outputDescriptionsByName.first { $0.value.type == .image }?.key
+            ?? model.modelDescription.outputDescriptionsByName.keys.first
     }
 }
