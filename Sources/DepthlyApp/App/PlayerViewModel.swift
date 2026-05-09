@@ -40,7 +40,7 @@ final class PlayerViewModel: ObservableObject {
     private var depthModelLoadGeneration: Int = 0
     private var timeObserverToken: Any?
     private var lastDepthMap: CIImage?
-    private let bufferedSampleInterval: TimeInterval = 0.25
+    private let defaultBufferedSampleInterval: TimeInterval = 1.0 / 15.0
     private var bufferedDepthSamples: [BufferedDepthSample] = []
     private var loadedDepthModelID: String?
     private var pendingAutoBuffer = false
@@ -160,9 +160,9 @@ final class PlayerViewModel: ObservableObject {
         statusText = "Buffering depth with \(depthModelDisplayName)..."
 
         let estimator = depthEstimator
-        let sampleInterval = bufferedSampleInterval
+        let defaultSampleInterval = defaultBufferedSampleInterval
 
-        bufferTask = Task.detached(priority: .utility) { [videoURL, estimator, sampleInterval] in
+        bufferTask = Task.detached(priority: .utility) { [videoURL, estimator, defaultSampleInterval] in
             do {
                 let asset = AVURLAsset(url: videoURL)
                 let duration = try await asset.load(.duration)
@@ -171,6 +171,12 @@ final class PlayerViewModel: ObservableObject {
                 guard let videoTrack = tracks.first else {
                     throw NSError(domain: "Depthly.Buffer", code: 1, userInfo: [NSLocalizedDescriptionKey: "No video track found"])
                 }
+
+                let nominalFrameRate = try await videoTrack.load(.nominalFrameRate)
+                let sampleInterval = Self.bufferedSamplingInterval(
+                    nominalFrameRate: Double(nominalFrameRate),
+                    fallback: defaultSampleInterval
+                )
 
                 let reader = try AVAssetReader(asset: asset)
                 let outputSettings: [String: Any] = [
@@ -501,6 +507,13 @@ final class PlayerViewModel: ObservableObject {
             statusText = "Depth model is not ready."
             bufferStatus = "Depth model not ready"
         }
+    }
+
+    nonisolated private static func bufferedSamplingInterval(nominalFrameRate nominalFPS: Double, fallback: TimeInterval) -> TimeInterval {
+        guard nominalFPS.isFinite, nominalFPS > 0 else { return fallback }
+
+        let targetFPS = min(max(nominalFPS, 12.0), 24.0)
+        return 1.0 / targetFPS
     }
 
     private static let selectedDepthModelDefaultsKey = "selectedDepthModelID"
