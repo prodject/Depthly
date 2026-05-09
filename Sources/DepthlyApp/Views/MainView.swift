@@ -15,6 +15,11 @@ struct MainView: View {
         ZStack {
             backdrop
 
+            AVPlayerViewRepresentable(player: viewModel.player)
+                .opacity(0.001)
+                .allowsHitTesting(false)
+                .ignoresSafeArea()
+
             MetalVideoSurface(viewModel: viewModel)
             .ignoresSafeArea()
 
