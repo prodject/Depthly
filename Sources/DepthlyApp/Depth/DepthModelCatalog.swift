@@ -1,22 +1,42 @@
 import Foundation
 
 struct DepthModelOption: Identifiable, Hashable, Sendable {
+    enum Kind: String, Hashable, Sendable {
+        case mock
+        case visionPersonSegmentation
+        case coreML
+    }
+
     let id: String
     let displayName: String
     let fileURL: URL?
-    let isMock: Bool
+    let kind: Kind
+
+    var isMock: Bool { kind == .mock }
+    var isBuiltInVision: Bool { kind == .visionPersonSegmentation }
+    var isCoreML: Bool { kind == .coreML }
 
     static let mock = DepthModelOption(
         id: "mock",
         displayName: "Mock foreground mask",
         fileURL: nil,
-        isMock: true
+        kind: .mock
+    )
+
+    static let visionPersonSegmentation = DepthModelOption(
+        id: "vision.person.segmentation",
+        displayName: "Vision Person Segmentation",
+        fileURL: nil,
+        kind: .visionPersonSegmentation
     )
 }
 
 enum DepthModelCatalog {
     static func discoverModels() -> [DepthModelOption] {
-        var options: [DepthModelOption] = [DepthModelOption.mock]
+        var options: [DepthModelOption] = [
+            DepthModelOption.visionPersonSegmentation,
+            DepthModelOption.mock
+        ]
 
         let urls = discoverModelURLs()
         for url in urls {
@@ -25,7 +45,7 @@ enum DepthModelCatalog {
                     id: url.path,
                     displayName: readableName(from: url),
                     fileURL: url,
-                    isMock: false
+                    kind: .coreML
                 )
             )
         }
