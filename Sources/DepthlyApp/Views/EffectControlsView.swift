@@ -3,11 +3,39 @@ import SwiftUI
 struct EffectControlsView: View {
     @Binding var isEffectEnabled: Bool
     @Binding var settings: EffectSettings
+    let availableDepthModels: [DepthModelOption]
+    let selectedDepthModelID: String
+    let depthModelStatus: String
+    let isLoadingDepthModel: Bool
+    let onSelectDepthModel: (String) -> Void
 
     var body: some View {
         GroupBox("Split-depth") {
             VStack(alignment: .leading, spacing: 14) {
                 Toggle("Enable effect", isOn: $isEffectEnabled)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Depth model")
+                        Spacer()
+                        Text(isLoadingDepthModel ? "Loading..." : depthModelStatus)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Picker(
+                        "Depth model",
+                        selection: Binding(
+                            get: { selectedDepthModelID },
+                            set: { onSelectDepthModel($0) }
+                        )
+                    ) {
+                        ForEach(availableDepthModels) { model in
+                            Text(model.displayName).tag(model.id)
+                        }
+                    }
+                    .labelsHidden()
+                }
 
                 SliderRow(
                     title: "Depth cutoff",

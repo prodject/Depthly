@@ -96,7 +96,14 @@ struct MainView: View {
 
             EffectControlsView(
                 isEffectEnabled: $viewModel.isEffectEnabled,
-                settings: $viewModel.effectSettings
+                settings: $viewModel.effectSettings,
+                availableDepthModels: viewModel.availableDepthModels,
+                selectedDepthModelID: viewModel.selectedDepthModelID,
+                depthModelStatus: viewModel.depthModelStatus,
+                isLoadingDepthModel: viewModel.isLoadingDepthModel,
+                onSelectDepthModel: { id in
+                    viewModel.selectDepthModel(id: id)
+                }
             )
         }
     }

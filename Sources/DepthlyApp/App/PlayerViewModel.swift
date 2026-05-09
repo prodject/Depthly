@@ -17,23 +17,35 @@ final class PlayerViewModel: ObservableObject {
     @Published var statusText: String = "Open a local video to begin."
     @Published var videoSize: CGSize = .zero
     @Published private(set) var overlayRevision: Int = 0
+    @Published var availableDepthModels: [DepthModelOption] = []
+    @Published var selectedDepthModelID: String = DepthModelOption.mock.id
+    @Published var depthModelStatus: String = "Mock depth"
+    @Published var isLoadingDepthModel = false
 
     private let frameProvider = VideoFrameProvider()
     private let renderer = SplitDepthRenderer()
     private let outputRouting = PlaybackOutputRouting()
-    private let depthEstimator: any DepthEstimating
+    private var depthEstimator: any DepthEstimating = MockDepthEstimator()
     private var currentFrameBuffer: CVPixelBuffer?
     private var isProcessingFrame = false
+    private var modelLoadTask: Task<Void, Never>?
+    private var didLoadDepthModelOnce = false
+    private var depthModelLoadGeneration: Int = 0
     private var timeObserverToken: Any?
     private var lastDepthMap: CIImage?
     private var lastInferenceDate: Date = .distantPast
     private let inferenceInterval: TimeInterval = 0.12
 
     init(depthEstimator: (any DepthEstimating)? = nil) {
+        availableDepthModels = DepthModelCatalog.discoverModels()
+        selectedDepthModelID = UserDefaults.standard.string(forKey: Self.selectedDepthModelDefaultsKey)
+            ?? availableDepthModels.first(where: { !$0.isMock })?.id
+            ?? DepthModelOption.mock.id
+
         if let depthEstimator {
             self.depthEstimator = depthEstimator
-        } else {
-            self.depthEstimator = PlayerViewModel.makeDefaultDepthEstimator()
+            selectedDepthModelID = DepthModelOption.mock.id
+            depthModelStatus = "Injected estimator"
         }
 
         frameProvider.onFrameAvailable = { [weak self] sample in
@@ -45,6 +57,10 @@ final class PlayerViewModel: ObservableObject {
         player.volume = Float(volume)
         player.automaticallyWaitsToMinimizeStalling = true
         outputRouting.attach(to: player)
+
+        Task { [weak self] in
+            await self?.loadDepthModelIfNeeded(force: true)
+        }
     }
 
     func openVideoFile() {
@@ -117,6 +133,14 @@ final class PlayerViewModel: ObservableObject {
     func setVolume(_ value: Double) {
         volume = max(0, min(1, value))
         player.volume = Float(volume)
+    }
+
+    func selectDepthModel(id: String) {
+        selectedDepthModelID = id
+        UserDefaults.standard.set(id, forKey: Self.selectedDepthModelDefaultsKey)
+        Task { [weak self] in
+            await self?.loadDepthModelIfNeeded(force: true)
+        }
     }
 
     func bindingProgress() -> Double {
@@ -196,25 +220,49 @@ final class PlayerViewModel: ObservableObject {
         currentFrameBuffer = nil
     }
 
-    private static func makeDefaultDepthEstimator() -> any DepthEstimating {
-        if let envPath = ProcessInfo.processInfo.environment["DEPTHLY_MODEL_PATH"] {
-            let url = URL(fileURLWithPath: envPath)
-            if let estimator = try? CoreMLDepthEstimator(compiledModelURL: url) {
-                return estimator
-            }
+    private func loadDepthModelIfNeeded(force: Bool = false) async {
+        modelLoadTask?.cancel()
+        depthModelLoadGeneration &+= 1
+        let generation = depthModelLoadGeneration
+
+        let selected = availableDepthModels.first(where: { $0.id == selectedDepthModelID }) ?? .mock
+        if !force, didLoadDepthModelOnce, selected.id == selectedDepthModelID {
+            return
         }
 
-        for `extension` in ["mlmodelc", "mlmodel"] {
-            if let url = Bundle.module.url(forResource: "DepthAnythingV2SmallF16", withExtension: `extension`, subdirectory: "Models"),
-               let estimator = try? CoreMLDepthEstimator(compiledModelURL: url) {
-                return estimator
-            }
+        guard !selected.isMock, let fileURL = selected.fileURL else {
+            depthEstimator = MockDepthEstimator()
+            depthModelStatus = selected.displayName
+            isLoadingDepthModel = false
+            didLoadDepthModelOnce = true
+            return
+        }
 
-            if let url = Bundle.module.url(forResource: "DepthAnythingV2Small", withExtension: `extension`, subdirectory: "Models"),
-               let estimator = try? CoreMLDepthEstimator(compiledModelURL: url) {
-                return estimator
+        isLoadingDepthModel = true
+        depthModelStatus = "Loading \(selected.displayName)..."
+
+        modelLoadTask = Task.detached(priority: .userInitiated) { [fileURL, displayName = selected.displayName, generation] in
+            do {
+                let estimator = try await CoreMLDepthEstimator(modelURL: fileURL)
+                await MainActor.run {
+                    guard self.depthModelLoadGeneration == generation else { return }
+                    self.depthEstimator = estimator
+                    self.depthModelStatus = displayName
+                    self.isLoadingDepthModel = false
+                    self.didLoadDepthModelOnce = true
+                }
+            } catch {
+                await MainActor.run {
+                    guard self.depthModelLoadGeneration == generation else { return }
+                    self.depthEstimator = MockDepthEstimator()
+                    self.depthModelStatus = "Failed to load \(displayName)"
+                    self.statusText = "Model load error: \(error.localizedDescription)"
+                    self.isLoadingDepthModel = false
+                    self.didLoadDepthModelOnce = true
+                }
             }
         }
-        return MockDepthEstimator()
     }
+
+    private static let selectedDepthModelDefaultsKey = "selectedDepthModelID"
 }
