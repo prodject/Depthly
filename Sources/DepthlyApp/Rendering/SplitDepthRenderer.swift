@@ -194,7 +194,11 @@ final class SplitDepthRenderer: @unchecked Sendable {
             ]
         ) ?? normalizedDepth
 
-        return thresholded
+        let eroded = thresholded.applyingFilter("CIMorphologyMinimum", parameters: [
+            kCIInputRadiusKey: max(1.0, settings.edgeSoftness / 6.0)
+        ])
+
+        return eroded
             .applyingFilter("CIGaussianBlur", parameters: [
                 kCIInputRadiusKey: settings.edgeSoftness
             ])
