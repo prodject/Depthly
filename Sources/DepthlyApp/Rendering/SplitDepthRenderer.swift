@@ -6,6 +6,19 @@ final class SplitDepthRenderer: @unchecked Sendable {
     private var previousMask: CIImage?
     private var previousRawDepth: CIImage?
 
+    private static let normalizeKernel: CIColorKernel = {
+        guard let kernel = CIColorKernel(source: """
+        kernel vec4 normalizeDepth(__sample s, float minValue, float maxValue) {
+            float range = max(maxValue - minValue, 0.0001);
+            float value = clamp((s.r - minValue) / range, 0.0, 1.0);
+            return vec4(value, value, value, 1.0);
+        }
+        """) else {
+            fatalError("Failed to build normalize kernel")
+        }
+        return kernel
+    }()
+
     private static let thresholdKernel: CIColorKernel = {
         guard let kernel = CIColorKernel(source: """
         kernel vec4 thresholdMask(__sample s, float cutoff, float softness, float strength) {
@@ -53,7 +66,7 @@ final class SplitDepthRenderer: @unchecked Sendable {
         let canvasExtent = extent
         let maskForForeground = settings.invertDepthMask ? inverted(mask: mask, extent: extent) : mask
         if settings.showMaskPreview {
-            let preview = debugMaskPreview(mask: maskForForeground, extent: extent)
+            let preview = debugMaskPreview(mask: maskForForeground, depthMap: previousRawDepth, extent: extent)
             return context.createCGImage(preview, from: canvasExtent)
         }
 
@@ -97,24 +110,28 @@ final class SplitDepthRenderer: @unchecked Sendable {
         return context.createCGImage(composited, from: canvasExtent)
     }
 
-    private func debugMaskPreview(mask: CIImage, extent: CGRect) -> CIImage {
-        let background = CIImage(color: CIColor(red: 0.03, green: 0.04, blue: 0.05, alpha: 1.0))
-            .cropped(to: extent)
+    private func debugMaskPreview(mask: CIImage, depthMap: CIImage?, extent: CGRect) -> CIImage {
+        let normalizedDepth = depthMap.map {
+            normalizeDepthDynamicRange($0, extent: extent)
+        } ?? CIImage(color: CIColor(red: 0.05, green: 0.05, blue: 0.06, alpha: 1.0)).cropped(to: extent)
 
-        let maskLuminance = mask
-            .applyingFilter("CIColorControls", parameters: [
-                kCIInputSaturationKey: 0.0,
-                kCIInputContrastKey: 1.35,
-                kCIInputBrightnessKey: 0.03
-            ])
-            .cropped(to: extent)
-
-        let colorized = maskLuminance.applyingFilter("CIFalseColor", parameters: [
-            "inputColor0": CIColor(red: 0.08, green: 0.10, blue: 0.15, alpha: 1.0),
-            "inputColor1": CIColor(red: 1.0, green: 0.95, blue: 0.82, alpha: 1.0)
+        let depthBackground = normalizedDepth.applyingFilter("CIFalseColor", parameters: [
+            "inputColor0": CIColor(red: 0.04, green: 0.05, blue: 0.08, alpha: 1.0),
+            "inputColor1": CIColor(red: 0.72, green: 0.86, blue: 1.0, alpha: 1.0)
         ])
 
-        return colorized.composited(over: background)
+        let highlightedMask = mask
+            .applyingFilter("CIColorControls", parameters: [
+                kCIInputSaturationKey: 0.0,
+                kCIInputContrastKey: 1.65,
+                kCIInputBrightnessKey: 0.02
+            ])
+            .applyingFilter("CIFalseColor", parameters: [
+                "inputColor0": CIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0),
+                "inputColor1": CIColor(red: 1.0, green: 0.88, blue: 0.46, alpha: 1.0)
+            ])
+
+        return highlightedMask.composited(over: depthBackground.cropped(to: extent))
     }
 
     private func inverted(mask: CIImage, extent: CGRect) -> CIImage {
@@ -186,18 +203,20 @@ final class SplitDepthRenderer: @unchecked Sendable {
         let scaled = scale(image: depthMap, toFit: extent)
             .applyingFilter("CIColorControls", parameters: [
                 kCIInputSaturationKey: 0.0,
-                kCIInputContrastKey: 1.22,
-                kCIInputBrightnessKey: -0.02
+                kCIInputContrastKey: 1.0,
+                kCIInputBrightnessKey: 0.0
             ])
             .applyingFilter("CIMedianFilter")
             .cropped(to: extent)
 
-        guard let previousRawDepth else { return scaled }
+        let normalized = normalizeDepthDynamicRange(scaled, extent: extent)
+
+        guard let previousRawDepth else { return normalized }
         let carry = min(max(settings.temporalSmoothing * 0.55, 0.0), 0.92)
         let mix = CIImage(color: CIColor(red: carry, green: carry, blue: carry, alpha: carry))
             .cropped(to: extent)
 
-        return scaled.applyingFilter("CIBlendWithMask", parameters: [
+        return normalized.applyingFilter("CIBlendWithMask", parameters: [
             kCIInputBackgroundImageKey: previousRawDepth,
             kCIInputMaskImageKey: mix
         ])
@@ -242,6 +261,52 @@ final class SplitDepthRenderer: @unchecked Sendable {
         let scaleY = extent.height / sourceExtent.height
         let transform = CGAffineTransform(scaleX: scaleX, y: scaleY)
         return image.transformed(by: transform).cropped(to: extent)
+    }
+
+    private func normalizeDepthDynamicRange(_ image: CIImage, extent: CGRect) -> CIImage {
+        guard let stats = minMax(for: image, extent: extent) else {
+            return image.cropped(to: extent)
+        }
+
+        let dynamicRange = stats.max - stats.min
+        guard dynamicRange > 0.0001 else {
+            return image.cropped(to: extent)
+        }
+
+        return Self.normalizeKernel.apply(
+            extent: extent,
+            arguments: [image, stats.min, stats.max]
+        )?.cropped(to: extent) ?? image.cropped(to: extent)
+    }
+
+    private func minMax(for image: CIImage, extent: CGRect) -> (min: Float, max: Float)? {
+        let sampledImage = image.cropped(to: extent)
+        let minimumImage = sampledImage.applyingFilter("CIAreaMinimum", parameters: [
+            kCIInputExtentKey: CIVector(cgRect: extent)
+        ])
+        let maximumImage = sampledImage.applyingFilter("CIAreaMaximum", parameters: [
+            kCIInputExtentKey: CIVector(cgRect: extent)
+        ])
+
+        guard let minValue = sampleSingleChannelValue(from: minimumImage),
+              let maxValue = sampleSingleChannelValue(from: maximumImage) else {
+            return nil
+        }
+
+        return (minValue, maxValue)
+    }
+
+    private func sampleSingleChannelValue(from image: CIImage) -> Float? {
+        var pixel = [Float](repeating: 0, count: 4)
+        context.render(
+            image,
+            toBitmap: &pixel,
+            rowBytes: MemoryLayout<Float>.size * 4,
+            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            format: .Rf,
+            colorSpace: nil
+        )
+        return pixel[0].isFinite ? pixel[0] : nil
     }
 
     private func makeEmptyMask(extent: CGRect) -> CIImage {
