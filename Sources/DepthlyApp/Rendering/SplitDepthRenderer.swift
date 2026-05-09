@@ -32,6 +32,43 @@ final class SplitDepthRenderer: @unchecked Sendable {
             return renderForegroundOverlay(frameImage: frameImage, mask: previousMask ?? makeFullMask(extent: extent), settings: settings)
         }
 
+        let mask = foregroundMask(from: depthMap, extent: extent, settings: settings)
+        let smoothedMask = smooth(mask: mask, with: previousMask, factor: settings.temporalSmoothing, extent: extent)
+        previousMask = smoothedMask
+
+        return renderForegroundOverlay(frameImage: frameImage, mask: smoothedMask, settings: settings)
+    }
+
+    private func renderForegroundOverlay(frameImage: CIImage, mask: CIImage, settings: EffectSettings) -> CGImage? {
+        let extent = frameImage.extent.integral
+        let border = max(settings.borderThickness, 0)
+        let canvasExtent = CGRect(
+            x: extent.minX - border,
+            y: extent.minY,
+            width: extent.width + border * 2,
+            height: extent.height
+        ).integral
+        let transparentBackground = CIImage(color: .clear).cropped(to: canvasExtent)
+
+        let foreground = frameImage.applyingFilter("CIBlendWithAlphaMask", parameters: [
+            kCIInputBackgroundImageKey: transparentBackground,
+            kCIInputMaskImageKey: mask
+        ])
+
+        let horizontalScale = 1.0 + (0.12 * settings.effectStrength)
+        let horizontalPush = border * 0.12 * settings.effectStrength
+        let transform = CGAffineTransform(translationX: canvasExtent.midX, y: canvasExtent.midY)
+            .scaledBy(x: horizontalScale, y: 1.0)
+            .translatedBy(x: -extent.midX + horizontalPush, y: -extent.midY)
+
+        let transformedForeground = foreground.transformed(by: transform)
+        let canvas = CIImage(color: .clear).cropped(to: canvasExtent)
+        let composited = transformedForeground.composited(over: canvas)
+
+        return context.createCGImage(composited, from: canvasExtent)
+    }
+
+    private func foregroundMask(from depthMap: CIImage, extent: CGRect, settings: EffectSettings) -> CIImage {
         let depthScaled = scale(image: depthMap, toFit: extent)
         let normalizedDepth = depthScaled
             .applyingFilter("CIColorControls", parameters: [
@@ -40,7 +77,7 @@ final class SplitDepthRenderer: @unchecked Sendable {
             ])
             .cropped(to: extent)
 
-        let mask = Self.thresholdKernel.apply(
+        let thresholded = Self.thresholdKernel.apply(
             extent: extent,
             arguments: [
                 normalizedDepth,
@@ -48,43 +85,13 @@ final class SplitDepthRenderer: @unchecked Sendable {
                 max(0.002, Double(settings.edgeSoftness / max(extent.width, extent.height))),
                 max(0.001, settings.effectStrength)
             ]
-        ) ?? normalizedDepth.cropped(to: extent)
+        ) ?? normalizedDepth
 
-        let softened = mask
+        return thresholded
             .applyingFilter("CIGaussianBlur", parameters: [
                 kCIInputRadiusKey: settings.edgeSoftness
             ])
             .cropped(to: extent)
-
-        let smoothedMask = smooth(mask: softened, with: previousMask, factor: settings.temporalSmoothing, extent: extent)
-        previousMask = smoothedMask
-
-        return renderForegroundOverlay(frameImage: frameImage, mask: smoothedMask, settings: settings)
-    }
-
-    private func renderForegroundOverlay(frameImage: CIImage, mask: CIImage, settings: EffectSettings) -> CGImage? {
-        let extent = frameImage.extent.integral
-        let transparentBackground = CIImage(color: .clear).cropped(to: extent)
-
-        let foreground = frameImage.applyingFilter("CIBlendWithAlphaMask", parameters: [
-            kCIInputBackgroundImageKey: transparentBackground,
-            kCIInputMaskImageKey: mask
-        ])
-
-        let border = settings.borderThickness
-        let canvasExtent = extent.insetBy(dx: -border, dy: -border)
-        let scale = 1.0 + (0.035 * settings.effectStrength)
-        let push = border * 0.18 * settings.effectStrength
-
-        let transform = CGAffineTransform(translationX: canvasExtent.midX, y: canvasExtent.midY)
-            .scaledBy(x: scale, y: scale)
-            .translatedBy(x: -extent.midX + push, y: -extent.midY - push * 0.55)
-
-        let transformedForeground = foreground.transformed(by: transform)
-        let canvas = CIImage(color: .clear).cropped(to: canvasExtent)
-        let composited = transformedForeground.composited(over: canvas)
-
-        return context.createCGImage(composited, from: canvasExtent)
     }
 
     private func scale(image: CIImage, toFit extent: CGRect) -> CIImage {

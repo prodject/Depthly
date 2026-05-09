@@ -10,7 +10,13 @@ struct MainView: View {
         VStack(spacing: 18) {
             header
 
-            MetalVideoSurface(viewModel: viewModel)
+            VideoPlayerContainer(
+                player: viewModel.player,
+                overlayImage: viewModel.overlayImage,
+                videoSize: viewModel.videoSize,
+                borderThickness: viewModel.effectSettings.borderThickness,
+                isEffectEnabled: viewModel.isEffectEnabled
+            )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             controls

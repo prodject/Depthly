@@ -6,12 +6,13 @@ struct VideoPlayerContainer: View {
     let overlayImage: CGImage?
     let videoSize: CGSize
     let borderThickness: CGFloat
+    let isEffectEnabled: Bool
 
     private var outerAspectRatio: CGFloat {
         let width = max(videoSize.width, 1)
         let height = max(videoSize.height, 1)
-        let outerWidth = width + borderThickness * 2
-        let outerHeight = height + borderThickness * 2
+        let outerWidth = isEffectEnabled ? width + borderThickness * 2 : width
+        let outerHeight = height
         return outerWidth / outerHeight
     }
 
@@ -20,9 +21,9 @@ struct VideoPlayerContainer: View {
             Color.black
 
             AVPlayerViewRepresentable(player: player)
-                .padding(borderThickness)
+                .padding(.horizontal, isEffectEnabled ? borderThickness : 0)
 
-            if let overlayImage {
+            if isEffectEnabled, let overlayImage {
                 Image(decorative: overlayImage, scale: 1.0)
                     .resizable()
                     .interpolation(.high)
