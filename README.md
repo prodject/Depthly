@@ -38,7 +38,7 @@ If you need the binary path after a debug build:
 .build/debug/DepthlyApp
 ```
 
-If you add a compiled Core ML model, place it in the app bundle or wire it into `PlayerViewModel.makeDefaultDepthEstimator()`.
+If you add a compiled Core ML model, place it in the app bundle or wire it into `PlayerViewModel.loadForegroundModelIfNeeded(force:)`.
 
 ### Recommended local model path
 
