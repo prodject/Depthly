@@ -74,6 +74,8 @@ enum DepthModelCatalog {
     private static func discoverModelURLs() -> [URL] {
         let fm = FileManager.default
         let rootCandidates = [
+            fm.homeDirectoryForCurrentUser.appendingPathComponent("Depthly/Models", isDirectory: true),
+            URL(fileURLWithPath: "/Home/Depthly/Models", isDirectory: true),
             Bundle.module.resourceURL?.appendingPathComponent("Models"),
             URL(fileURLWithPath: "Sources/DepthlyApp/Resources/Models", isDirectory: true),
             URL(fileURLWithPath: "models", isDirectory: true)

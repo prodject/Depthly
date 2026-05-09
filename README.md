@@ -46,6 +46,10 @@ Download `DepthAnythingV2SmallF16.mlpackage` from Apple’s Hugging Face repo an
 
 `Sources/DepthlyApp/Resources/Models/DepthAnythingV2SmallF16.mlpackage`
 
+You can also place models in:
+
+`~/Depthly/Models`
+
 Any additional `.mlpackage`, `.mlmodel`, or `.mlmodelc` files placed in that folder will appear in the in-app model picker.
 
 Then build with:
