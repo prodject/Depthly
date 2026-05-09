@@ -131,10 +131,12 @@ final class MetalSplitDepthRenderer: NSObject, MTKViewDelegate {
         encoder?.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
 
         let drawableSize = CGSize(width: view.drawableSize.width, height: view.drawableSize.height)
-        let canvasAspect = canvasAspectRatio(for: state)
+        let effectiveVideoSize = resolvedVideoSize(for: state)
+        let canvasAspect = canvasAspectRatio(videoSize: effectiveVideoSize, borderThickness: state.borderThickness)
         let canvasRect = fitRect(aspectRatio: canvasAspect, in: CGRect(origin: .zero, size: drawableSize))
-        let borderScale = canvasRect.width / max(state.videoSize.width + state.borderThickness * 2, 1)
-        let frameRect = canvasRect.insetBy(dx: state.borderThickness * borderScale, dy: state.borderThickness * borderScale)
+        let borderScale = canvasRect.width / max(effectiveVideoSize.width + state.borderThickness * 2, 1)
+        let inset = min(canvasRect.width * 0.45, state.borderThickness * borderScale)
+        let frameRect = canvasRect.insetBy(dx: inset, dy: inset)
 
         if let frameBuffer = state.frameBuffer {
             if let frameTexture = makeTexture(from: frameBuffer) {
@@ -198,10 +200,25 @@ final class MetalSplitDepthRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    private func canvasAspectRatio(for state: MetalSplitDepthRenderState) -> CGFloat {
-        let width = max(state.videoSize.width + state.borderThickness * 2, 1)
-        let height = max(state.videoSize.height + state.borderThickness * 2, 1)
+    private func canvasAspectRatio(videoSize: CGSize, borderThickness: CGFloat) -> CGFloat {
+        let width = max(videoSize.width + borderThickness * 2, 1)
+        let height = max(videoSize.height + borderThickness * 2, 1)
         return width / height
+    }
+
+    private func resolvedVideoSize(for state: MetalSplitDepthRenderState) -> CGSize {
+        if state.videoSize != .zero {
+            return state.videoSize
+        }
+
+        if let frameBuffer = state.frameBuffer {
+            return CGSize(
+                width: CVPixelBufferGetWidth(frameBuffer),
+                height: CVPixelBufferGetHeight(frameBuffer)
+            )
+        }
+
+        return CGSize(width: 1920, height: 1080)
     }
 
     private func makeTexture(from pixelBuffer: CVPixelBuffer) -> MTLTexture? {
