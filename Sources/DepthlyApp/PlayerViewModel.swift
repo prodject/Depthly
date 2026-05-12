@@ -1,12 +1,10 @@
 import AVFoundation
 import AppKit
 import Combine
-import CoreImage
 import CoreMedia
 import Foundation
 import UniformTypeIdentifiers
 
-@MainActor
 final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     @Published var overlayImage: NSImage?
     @Published var currentTime: Double = 0
@@ -15,28 +13,43 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     @Published var volume: Double = 1.0
     @Published var effectSettings: EffectSettings = .default
     @Published var statusMessage: String = "Open a local video to begin."
+    @Published var hasVideoLoaded: Bool = false
+    @Published var videoSize: CGSize = .zero
 
     let player = AVPlayer()
 
     private let frameProvider = AVPlayerItemFrameProvider()
-    private let foregroundMaskProvider: ForegroundMaskProviding = AdaptiveForegroundMaskProvider()
-    private let renderer = SplitDepthRenderer()
+    private let frameProcessor = SplitDepthFrameProcessor()
     private let airPlayCoordinator = AirPlayCoordinator()
 
     private var renderTimer: DispatchSourceTimer?
     private let renderQueue = DispatchQueue(label: "Depthly.render.queue", qos: .userInitiated)
+    private var currentRenderTask: Task<Void, Never>?
+    private var lastAnalysisTimestamp: Double = -.infinity
+    private var isProcessingFrame = false
     private var observationTokens: [NSKeyValueObservation] = []
+    private var timeObserverToken: Any?
 
     init() {
+        player.automaticallyWaitsToMinimizeStalling = true
         airPlayCoordinator.configure(player: player)
         volume = Double(player.volume)
         startRenderLoop()
+        installTimeObserver()
         observePlayerState()
     }
 
     deinit {
         renderTimer?.cancel()
+        if let timeObserverToken {
+            player.removeTimeObserver(timeObserverToken)
+        }
         frameProvider.detach()
+        renderQueue.async { [weak self] in
+            self?.currentRenderTask?.cancel()
+            self?.currentRenderTask = nil
+            self?.isProcessingFrame = false
+        }
     }
 
     func openVideo() {
@@ -63,8 +76,42 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         player.volume = Float(volume)
         player.play()
 
+        hasVideoLoaded = true
+        overlayImage = nil
+        currentTime = 0
+        duration = 0
         statusMessage = url.lastPathComponent
         refreshDuration()
+        resetProcessingState(clearOverlay: false)
+        Task {
+            await frameProcessor.reset()
+        }
+        Task {
+            do {
+                let tracks = try await asset.loadTracks(withMediaType: .video)
+                guard let track = tracks.first else {
+                    await MainActor.run {
+                        self.videoSize = .zero
+                    }
+                    return
+                }
+
+                let naturalSize = try await track.load(.naturalSize)
+                let preferredTransform = try await track.load(.preferredTransform)
+                let transformedSize = naturalSize.applying(preferredTransform)
+
+                await MainActor.run {
+                    self.videoSize = CGSize(
+                        width: abs(transformedSize.width),
+                        height: abs(transformedSize.height)
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.videoSize = .zero
+                }
+            }
+        }
     }
 
     func togglePlayback() {
@@ -79,7 +126,11 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         guard duration > 0 else { return }
         let clamped = max(0.0, min(1.0, fraction))
         let target = CMTime(seconds: duration * clamped, preferredTimescale: 600)
-        player.seek(to: target)
+        player.seek(to: target) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.currentTime = target.seconds
+            }
+        }
     }
 
     func updateVolume(_ newValue: Double) {
@@ -91,12 +142,18 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         effectSettings.isEnabled = enabled
         if !enabled {
             overlayImage = nil
+            resetProcessingState(clearOverlay: false)
+            Task {
+                await frameProcessor.reset()
+            }
+        } else {
+            resetProcessingState(clearOverlay: false)
         }
     }
 
     private func startRenderLoop() {
         let timer = DispatchSource.makeTimerSource(queue: renderQueue)
-        timer.schedule(deadline: .now(), repeating: 1.0 / 24.0, leeway: .milliseconds(10))
+        timer.schedule(deadline: .now(), repeating: 1.0 / 30.0, leeway: .milliseconds(10))
         timer.setEventHandler { [weak self] in
             self?.renderTick()
         }
@@ -104,8 +161,27 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         renderTimer = timer
     }
 
+    private func installTimeObserver() {
+        let interval = CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600)
+        timeObserverToken = player.addPeriodicTimeObserver(
+            forInterval: interval,
+            queue: .main
+        ) { [weak self] time in
+            guard let self else { return }
+            let seconds = time.seconds
+            if seconds.isFinite {
+                self.currentTime = seconds
+            }
+
+            if let duration = self.player.currentItem?.duration.seconds, duration.isFinite {
+                self.duration = duration
+            }
+        }
+    }
+
     private func renderTick() {
-        guard effectSettings.isEnabled, let item = player.currentItem else {
+        let settings = effectSettings
+        guard settings.isEnabled, player.currentItem != nil else {
             return
         }
 
@@ -114,28 +190,42 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             return
         }
 
-        let shouldAnalyzeThisFrame = itemTime.seconds.isFinite
-        guard shouldAnalyzeThisFrame else { return }
+        let timestamp = itemTime.seconds
+        guard timestamp.isFinite else { return }
+        guard timestamp - lastAnalysisTimestamp >= settings.analysisInterval else { return }
+        guard !isProcessingFrame else { return }
 
-        Task.detached(priority: .userInitiated) { [weak self] in
+        lastAnalysisTimestamp = timestamp
+        isProcessingFrame = true
+
+        let frameProcessor = frameProcessor
+
+        currentRenderTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
-            await self.processFrame(pixelBuffer: pixelBuffer, timestamp: itemTime, duration: item.duration.seconds)
-        }
-    }
 
-    private func processFrame(pixelBuffer: CVPixelBuffer, timestamp: CMTime, duration: Double) async {
-        do {
-            let foregroundMask = try await foregroundMaskProvider.makeForegroundMask(from: pixelBuffer, timestamp: timestamp)
-            let cgImage = try renderer.renderOverlay(frameBuffer: pixelBuffer, foregroundMask: foregroundMask.pixelBuffer, settings: effectSettings)
-            let image = NSImage(cgImage: cgImage, size: .zero)
-            await MainActor.run {
-                self.overlayImage = image
-                self.currentTime = timestamp.seconds
-                self.duration = duration.isFinite ? duration : self.duration
+            do {
+                let cgImage = try await frameProcessor.processFrame(
+                    frameBuffer: pixelBuffer,
+                    timestamp: itemTime,
+                    settings: settings
+                )
+
+                guard !Task.isCancelled else { return }
+
+                let image = NSImage(cgImage: cgImage, size: .zero)
+                await MainActor.run {
+                    guard self.effectSettings.isEnabled else { return }
+                    self.overlayImage = image
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.statusMessage = "Effect pipeline error: \(error.localizedDescription)"
+                }
             }
-        } catch {
+
             await MainActor.run {
-                self.statusMessage = "Effect pipeline error: \(error.localizedDescription)"
+                self.isProcessingFrame = false
             }
         }
     }
@@ -169,6 +259,19 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             await MainActor.run {
                 self.duration = loadedDuration?.seconds ?? 0
             }
+        }
+    }
+
+    private func resetProcessingState(clearOverlay: Bool) {
+        renderQueue.async { [weak self] in
+            self?.lastAnalysisTimestamp = -.infinity
+            self?.currentRenderTask?.cancel()
+            self?.currentRenderTask = nil
+            self?.isProcessingFrame = false
+        }
+
+        if clearOverlay {
+            overlayImage = nil
         }
     }
 }

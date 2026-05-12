@@ -4,16 +4,15 @@ import CoreVideo
 import Foundation
 
 final class MockDepthEstimator: DepthEstimating {
-    private let outputWidth: Int
-    private let outputHeight: Int
+    private let longSide: Int
 
-    init(outputWidth: Int = 256, outputHeight: Int = 256) {
-        self.outputWidth = outputWidth
-        self.outputHeight = outputHeight
+    init(longSide: Int = 256) {
+        self.longSide = max(64, longSide)
     }
 
     func estimateMask(from pixelBuffer: CVPixelBuffer, timestamp: CMTime) async throws -> DepthMask {
-        let mask = try makePixelBuffer(width: outputWidth, height: outputHeight)
+        let size = outputSize(for: pixelBuffer)
+        let mask = try makePixelBuffer(width: size.width, height: size.height)
         let phase = (timestamp.seconds.isFinite ? timestamp.seconds : 0) * 0.8
         let centerX = 0.5 + 0.10 * sin(phase)
         let centerY = 0.54 + 0.06 * cos(phase * 0.7)
@@ -46,6 +45,22 @@ final class MockDepthEstimator: DepthEstimating {
         }
 
         return DepthMask(pixelBuffer: mask, confidence: 0.65, timestamp: timestamp)
+    }
+
+    private func outputSize(for sourcePixelBuffer: CVPixelBuffer) -> (width: Int, height: Int) {
+        let sourceWidth = max(CVPixelBufferGetWidth(sourcePixelBuffer), 1)
+        let sourceHeight = max(CVPixelBufferGetHeight(sourcePixelBuffer), 1)
+        let aspectRatio = Double(sourceWidth) / Double(sourceHeight)
+
+        if aspectRatio >= 1.0 {
+            let width = longSide
+            let height = max(1, Int((Double(longSide) / aspectRatio).rounded()))
+            return (width, height)
+        } else {
+            let height = longSide
+            let width = max(1, Int((Double(longSide) * aspectRatio).rounded()))
+            return (width, height)
+        }
     }
 
     private func makePixelBuffer(width: Int, height: Int) throws -> CVPixelBuffer {

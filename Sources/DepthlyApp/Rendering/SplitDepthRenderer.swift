@@ -38,7 +38,18 @@ final class SplitDepthRenderer {
                     kCIInputMaskImageKey: softenedMask
                 ]
             )
-            foregroundImage = extractedForeground
+
+            let strength = max(0.0, min(1.0, settings.effectStrength))
+            if strength < 1.0 {
+                foregroundImage = extractedForeground.applyingFilter(
+                    "CIColorMatrix",
+                    parameters: [
+                        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: strength)
+                    ]
+                )
+            } else {
+                foregroundImage = extractedForeground
+            }
         }
 
         let finalImage = (foregroundImage ?? clearBackground).composited(over: barsImage)
