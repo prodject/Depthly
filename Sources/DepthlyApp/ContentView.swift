@@ -107,6 +107,20 @@ struct ContentView: View {
         GroupBox("Effect Controls") {
             Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 12) {
                 GridRow {
+                    Text("Preset")
+                    Picker("", selection: Binding(
+                        get: { viewModel.selectedPreset },
+                        set: { viewModel.applyPreset($0) }
+                    )) {
+                        ForEach(EffectPreset.allCases) { preset in
+                            Text(preset.displayName).tag(preset)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Spacer()
+                }
+                GridRow {
                     Text("Mask Mode")
                     Picker("", selection: Binding(
                         get: { viewModel.effectSettings.maskMode },

@@ -16,6 +16,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     @Published var isPlaying: Bool = false
     @Published var volume: Double = 1.0
     @Published var effectSettings: EffectSettings = .default
+    @Published var selectedPreset: EffectPreset = .custom
     @Published var isBuffering: Bool = false
     @Published var bufferProgress: Double = 0
     @Published var statusMessage: String = "Open a local video to begin."
@@ -115,6 +116,29 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         effectSettings.maskMode = mode
         temporalSmoother.reset()
         maskCache.removeAll()
+        selectedPreset = .custom
+    }
+
+    func applyPreset(_ preset: EffectPreset) {
+        selectedPreset = preset
+        switch preset {
+        case .custom:
+            break
+        case .release100:
+            effectSettings.isEnabled = true
+            effectSettings.maskMode = .visionOnly
+            effectSettings.orientation = .auto
+            effectSettings.depthCutoff = 0.68
+            effectSettings.borderThickness = 0.08
+            effectSettings.edgeSoftness = 0.18
+            effectSettings.effectStrength = 0.0
+            effectSettings.temporalSmoothing = 0.0
+            effectSettings.analysisScale = 0.5
+            effectSettings.analysisInterval = 1.0 / 12.0
+            temporalSmoother.reset()
+            maskCache.removeAll()
+            statusMessage = "Applied Release 1.0.0 preset"
+        }
     }
 
     func bufferPlayback() {
@@ -247,6 +271,12 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
                 cutoff: effectSettings.depthCutoff,
                 effectStrength: effectSettings.effectStrength
             ) ?? foregroundMask ?? makeEmptyMaskLike(pixelBuffer, timestamp: timestamp)
+        }
+    }
+
+    func noteManualOverride() {
+        if selectedPreset != .custom {
+            selectedPreset = .custom
         }
     }
 
