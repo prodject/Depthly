@@ -8,6 +8,11 @@ import UniformTypeIdentifiers
 
 private let prebufferImageContext = CIContext(options: nil)
 
+private struct BufferSignature: Equatable {
+    let videoPath: String
+    let settingsKey: String
+}
+
 @MainActor
 final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     @Published var overlayImage: NSImage?
@@ -38,6 +43,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     private var observationTokens: [NSKeyValueObservation] = []
     private var currentVideoURL: URL?
     private var bufferTask: Task<Void, Never>?
+    private var bufferSignature: BufferSignature?
 
     init() {
         airPlayCoordinator.configure(player: player)
@@ -76,6 +82,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         temporalSmoother.reset()
         maskCache.clearMemory()
         isBufferReady = false
+        bufferSignature = nil
 
         player.replaceCurrentItem(with: item)
         player.volume = Float(volume)
@@ -93,7 +100,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             player.pause()
         } else {
             if effectSettings.isEnabled {
-                if isBufferReady {
+                if isCurrentBufferValid() {
                     player.play()
                 } else {
                     bufferPlayback(resumeAfterBuffer: true)
@@ -110,6 +117,8 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         let target = CMTime(seconds: duration * clamped, preferredTimescale: 600)
         temporalSmoother.reset()
         maskCache.clearMemory()
+        isBufferReady = false
+        bufferSignature = nil
         player.seek(to: target)
     }
 
@@ -124,6 +133,8 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         if !enabled {
             overlayImage = nil
             temporalSmoother.reset()
+            isBufferReady = false
+            bufferSignature = nil
         }
     }
 
@@ -137,6 +148,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         temporalSmoother.reset()
         maskCache.removeAll()
         isBufferReady = false
+        bufferSignature = nil
         selectedPreset = .custom
     }
 
@@ -144,6 +156,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         effectSettings.verticalBarsEnabled = enabled
         maskCache.removeAll()
         isBufferReady = false
+        bufferSignature = nil
         selectedPreset = .custom
     }
 
@@ -151,6 +164,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         effectSettings.verticalBarDivisionCount = count
         maskCache.removeAll()
         isBufferReady = false
+        bufferSignature = nil
         selectedPreset = .custom
     }
 
@@ -158,6 +172,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         effectSettings.verticalBarThickness = value
         maskCache.removeAll()
         isBufferReady = false
+        bufferSignature = nil
         selectedPreset = .custom
     }
 
@@ -165,6 +180,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         effectSettings.horizontalBarsEnabled = enabled
         maskCache.removeAll()
         isBufferReady = false
+        bufferSignature = nil
         selectedPreset = .custom
     }
 
@@ -172,6 +188,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         effectSettings.horizontalBarThickness = value
         maskCache.removeAll()
         isBufferReady = false
+        bufferSignature = nil
         selectedPreset = .custom
     }
 
@@ -200,7 +217,14 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             temporalSmoother.reset()
             maskCache.removeAll()
             isBufferReady = false
+            bufferSignature = nil
             statusMessage = "Applied Release 1.0.0 preset"
+
+            guard currentVideoURL != nil, duration > 0 else {
+                return
+            }
+
+            bufferPlayback(resumeAfterBuffer: isPlaying)
         }
     }
 
@@ -209,6 +233,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             return
         }
 
+        maskCache.configure(for: url)
         player.pause()
         isBuffering = true
         bufferProgress = 0
@@ -217,7 +242,9 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         bufferTask?.cancel()
         let settingsSnapshot = effectSettings
         let startTime = player.currentTime()
+        let signature = makeBufferSignature(videoURL: url, settings: settingsSnapshot)
         isBufferReady = false
+        bufferSignature = signature
 
         bufferTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
@@ -232,6 +259,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
                     self.isBuffering = false
                     self.bufferProgress = 1.0
                     self.isBufferReady = true
+                    self.bufferSignature = signature
                     self.statusMessage = "Buffer ready"
                     if resumeAfterBuffer {
                         self.player.play()
@@ -241,6 +269,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
                 await MainActor.run {
                     self.isBuffering = false
                     self.isBufferReady = false
+                    self.bufferSignature = nil
                     self.statusMessage = "Buffering failed: \(error.localizedDescription)"
                 }
             }
@@ -560,5 +589,35 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             statusMessage = currentVideoURL?.lastPathComponent ?? "Ready"
             player.play()
         }
+    }
+
+    private func isCurrentBufferValid() -> Bool {
+        guard isBufferReady, let currentVideoURL else { return false }
+        let currentSignature = makeBufferSignature(videoURL: currentVideoURL, settings: effectSettings)
+        return bufferSignature == currentSignature
+    }
+
+    private func makeBufferSignature(videoURL: URL, settings: EffectSettings) -> BufferSignature {
+        BufferSignature(
+            videoPath: videoURL.standardizedFileURL.path,
+            settingsKey: [
+                settings.isEnabled ? "1" : "0",
+                settings.viewMaskOnly ? "1" : "0",
+                settings.maskMode.rawValue,
+                settings.orientation.rawValue,
+                String(format: "%.4f", settings.depthCutoff),
+                String(format: "%.4f", settings.borderThickness),
+                settings.verticalBarsEnabled ? "1" : "0",
+                String(settings.verticalBarDivisionCount.rawValue),
+                String(format: "%.4f", settings.verticalBarThickness),
+                settings.horizontalBarsEnabled ? "1" : "0",
+                String(format: "%.4f", settings.horizontalBarThickness),
+                String(format: "%.4f", settings.edgeSoftness),
+                String(format: "%.4f", settings.effectStrength),
+                String(format: "%.4f", settings.temporalSmoothing),
+                String(format: "%.4f", settings.analysisScale),
+                String(format: "%.4f", settings.analysisInterval)
+            ].joined(separator: "|")
+        )
     }
 }
