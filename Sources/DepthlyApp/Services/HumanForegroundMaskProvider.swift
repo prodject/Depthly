@@ -2,17 +2,12 @@ import CoreMedia
 import CoreVideo
 import Foundation
 
-final class AdaptiveForegroundMaskProvider: ForegroundMaskProviding {
+final class HumanForegroundMaskProvider: ForegroundMaskProviding {
     private let visionProvider: VisionPersonSegmentationProvider
-    private let fallbackProvider: ForegroundMaskProviding
     private var lastStableMask: ForegroundMask?
 
-    init(
-        visionProvider: VisionPersonSegmentationProvider = VisionPersonSegmentationProvider(),
-        fallbackProvider: ForegroundMaskProviding = MockForegroundMaskProvider()
-    ) {
+    init(visionProvider: VisionPersonSegmentationProvider = VisionPersonSegmentationProvider()) {
         self.visionProvider = visionProvider
-        self.fallbackProvider = fallbackProvider
     }
 
     func makeForegroundMask(from pixelBuffer: CVPixelBuffer, timestamp: CMTime) async throws -> ForegroundMask {
@@ -29,6 +24,6 @@ final class AdaptiveForegroundMaskProvider: ForegroundMaskProviding {
             )
         }
 
-        return try await fallbackProvider.makeForegroundMask(from: pixelBuffer, timestamp: timestamp)
+        throw DepthEstimatorError.modelUnavailable
     }
 }

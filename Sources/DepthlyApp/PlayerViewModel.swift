@@ -1,19 +1,11 @@
 import AVFoundation
 import AppKit
 import Combine
-import CoreImage
 import CoreMedia
+import CoreVideo
 import Foundation
 import UniformTypeIdentifiers
 
-private let prebufferImageContext = CIContext(options: nil)
-
-private struct BufferSignature: Equatable {
-    let videoPath: String
-    let settingsKey: String
-}
-
-@MainActor
 final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     @Published var overlayImage: NSImage?
     @Published var currentTime: Double = 0
@@ -21,41 +13,74 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     @Published var isPlaying: Bool = false
     @Published var volume: Double = 1.0
     @Published var effectSettings: EffectSettings = .default
-    @Published var selectedPreset: EffectPreset = .custom
-    @Published var isBuffering: Bool = false
-    @Published var bufferProgress: Double = 0
-    @Published var isBufferReady: Bool = false
     @Published var statusMessage: String = "Open a local video to begin."
+    @Published var hasVideoLoaded: Bool = false
+    @Published var videoSize: CGSize = .zero
+    @Published var preprocessingProgress: Double = 0
+    @Published var isPreprocessingMasks: Bool = false
 
     let player = AVPlayer()
 
     private let frameProvider = AVPlayerItemFrameProvider()
-    private let depthEstimator: DepthEstimating = AdaptiveDepthEstimator()
-    private let foregroundMaskProvider: ForegroundMaskProviding = AdaptiveForegroundMaskProvider()
-    private let maskFusion = MaskFusion()
-    private let temporalSmoother = TemporalMaskSmoother()
-    private let maskCache = MaskCache()
-    private let renderer = SplitDepthRenderer()
+    private let maskTimeline = ForegroundMaskTimeline()
+    private let frameProcessor: SplitDepthFrameProcessor
+    private let maskPreprocessor = VideoMaskPreprocessor()
     private let airPlayCoordinator = AirPlayCoordinator()
 
-    private var renderTimer: DispatchSourceTimer?
+    private var displayLink: CVDisplayLink?
     private let renderQueue = DispatchQueue(label: "Depthly.render.queue", qos: .userInitiated)
+    private var currentRenderTask: Task<Void, Never>?
+    private var preprocessingTask: Task<Void, Never>?
+    private var pendingFrame: PendingFrame?
     private var observationTokens: [NSKeyValueObservation] = []
-    private var currentVideoURL: URL?
-    private var bufferTask: Task<Void, Never>?
-    private var bufferSignature: BufferSignature?
+    private var timeObserverToken: Any?
+    private var cancellables: Set<AnyCancellable> = []
+    private var loadedAsset: AVAsset?
+    private var lastPreprocessedMaskSettings = MaskSettingsSnapshot(settings: .default)
+
+    private struct PendingFrame {
+        let pixelBuffer: CVPixelBuffer
+        let itemTime: CMTime
+        let settings: EffectSettings
+    }
+
+    private struct MaskSettingsSnapshot: Equatable {
+        let depthCutoff: Double
+        let edgeSoftness: Double
+        let temporalSmoothing: Double
+
+        init(settings: EffectSettings) {
+            depthCutoff = settings.depthCutoff
+            edgeSoftness = settings.edgeSoftness
+            temporalSmoothing = settings.temporalSmoothing
+        }
+    }
 
     init() {
+        frameProcessor = SplitDepthFrameProcessor(timeline: maskTimeline)
+        player.automaticallyWaitsToMinimizeStalling = true
         airPlayCoordinator.configure(player: player)
         volume = Double(player.volume)
         startRenderLoop()
+        installTimeObserver()
         observePlayerState()
+        observeEffectSettings()
     }
 
     deinit {
-        renderTimer?.cancel()
+        if let displayLink {
+            CVDisplayLinkStop(displayLink)
+        }
+        if let timeObserverToken {
+            player.removeTimeObserver(timeObserverToken)
+        }
         frameProvider.detach()
-        bufferTask?.cancel()
+        renderQueue.async { [weak self] in
+            self?.currentRenderTask?.cancel()
+            self?.currentRenderTask = nil
+            self?.pendingFrame = nil
+        }
+        preprocessingTask?.cancel()
     }
 
     func openVideo() {
@@ -73,25 +98,55 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
 
     func load(url: URL) {
         let asset = AVAsset(url: url)
+        loadedAsset = asset
         let item = AVPlayerItem(asset: asset)
 
-        currentVideoURL = url
-        maskCache.configure(for: url, persistent: effectSettings.autoBufferPlayback)
         frameProvider.detach()
         frameProvider.attach(to: item)
-        temporalSmoother.reset()
-        maskCache.clearMemory()
-        isBufferReady = false
-        bufferSignature = nil
 
         player.replaceCurrentItem(with: item)
         player.volume = Float(volume)
-        player.pause()
-        statusMessage = effectSettings.autoBufferPlayback ? "Preparing full buffer..." : url.lastPathComponent
+        player.play()
 
-        Task { [weak self] in
-            guard let self else { return }
-            await self.startPlaybackAfterLoad()
+        hasVideoLoaded = true
+        overlayImage = nil
+        currentTime = 0
+        duration = 0
+        statusMessage = url.lastPathComponent
+        preprocessingProgress = 0
+        isPreprocessingMasks = false
+        lastPreprocessedMaskSettings = MaskSettingsSnapshot(settings: effectSettings)
+        refreshDuration()
+        resetProcessingState(clearOverlay: false)
+        Task {
+            await frameProcessor.reset()
+        }
+        startMaskPreprocessing(for: asset)
+        Task {
+            do {
+                let tracks = try await asset.loadTracks(withMediaType: .video)
+                guard let track = tracks.first else {
+                    await MainActor.run {
+                        self.videoSize = .zero
+                    }
+                    return
+                }
+
+                let naturalSize = try await track.load(.naturalSize)
+                let preferredTransform = try await track.load(.preferredTransform)
+                let transformedSize = naturalSize.applying(preferredTransform)
+
+                await MainActor.run {
+                    self.videoSize = CGSize(
+                        width: abs(transformedSize.width),
+                        height: abs(transformedSize.height)
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.videoSize = .zero
+                }
+            }
         }
     }
 
@@ -99,15 +154,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         if isPlaying {
             player.pause()
         } else {
-            if effectSettings.isEnabled && effectSettings.autoBufferPlayback {
-                if isCurrentBufferValid() {
-                    player.play()
-                } else {
-                    bufferPlayback(resumeAfterBuffer: true)
-                }
-            } else {
-                player.play()
-            }
+            player.play()
         }
     }
 
@@ -115,11 +162,12 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         guard duration > 0 else { return }
         let clamped = max(0.0, min(1.0, fraction))
         let target = CMTime(seconds: duration * clamped, preferredTimescale: 600)
-        temporalSmoother.reset()
-        maskCache.clearMemory()
-        isBufferReady = false
-        bufferSignature = nil
-        player.seek(to: target)
+        player.seek(to: target) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.currentTime = target.seconds
+                self?.overlayImage = nil
+            }
+        }
     }
 
     func updateVolume(_ newValue: Double) {
@@ -129,163 +177,59 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
 
     func setEffectEnabled(_ enabled: Bool) {
         effectSettings.isEnabled = enabled
-        selectedPreset = .custom
         if !enabled {
             overlayImage = nil
-            temporalSmoother.reset()
-            isBufferReady = false
-            bufferSignature = nil
-        }
-    }
-
-    func setViewMaskOnly(_ enabled: Bool) {
-        effectSettings.viewMaskOnly = enabled
-        selectedPreset = .custom
-    }
-
-    func setMaskMode(_ mode: MaskPipelineMode) {
-        effectSettings.maskMode = mode
-        temporalSmoother.reset()
-        maskCache.removeAll()
-        isBufferReady = false
-        bufferSignature = nil
-        selectedPreset = .custom
-    }
-
-    func setVerticalBarsEnabled(_ enabled: Bool) {
-        effectSettings.verticalBarsEnabled = enabled
-        maskCache.removeAll()
-        isBufferReady = false
-        bufferSignature = nil
-        selectedPreset = .custom
-    }
-
-    func setVerticalBarDivisionCount(_ count: SplitDepthVerticalDivisionCount) {
-        effectSettings.verticalBarDivisionCount = count
-        maskCache.removeAll()
-        isBufferReady = false
-        bufferSignature = nil
-        selectedPreset = .custom
-    }
-
-    func setVerticalBarThickness(_ value: Double) {
-        effectSettings.verticalBarThickness = value
-        maskCache.removeAll()
-        isBufferReady = false
-        bufferSignature = nil
-        selectedPreset = .custom
-    }
-
-    func setHorizontalBarsEnabled(_ enabled: Bool) {
-        effectSettings.horizontalBarsEnabled = enabled
-        maskCache.removeAll()
-        isBufferReady = false
-        bufferSignature = nil
-        selectedPreset = .custom
-    }
-
-    func setHorizontalBarThickness(_ value: Double) {
-        effectSettings.horizontalBarThickness = value
-        maskCache.removeAll()
-        isBufferReady = false
-        bufferSignature = nil
-        selectedPreset = .custom
-    }
-
-    func applyPreset(_ preset: EffectPreset) {
-        selectedPreset = preset
-        switch preset {
-        case .custom:
-            break
-        case .release100:
-            effectSettings.isEnabled = true
-            effectSettings.viewMaskOnly = false
-            effectSettings.autoBufferPlayback = false
-            effectSettings.maskMode = .visionOnly
-            effectSettings.orientation = .auto
-            effectSettings.depthCutoff = 0.68
-            effectSettings.borderThickness = 0.08
-            effectSettings.verticalBarsEnabled = true
-            effectSettings.verticalBarDivisionCount = .three
-            effectSettings.verticalBarThickness = 0.06
-            effectSettings.horizontalBarsEnabled = true
-            effectSettings.horizontalBarThickness = 0.08
-            effectSettings.edgeSoftness = 0.18
-            effectSettings.effectStrength = 0.0
-            effectSettings.temporalSmoothing = 0.0
-            effectSettings.analysisScale = 0.5
-            effectSettings.analysisInterval = 1.0 / 12.0
-            temporalSmoother.reset()
-            maskCache.removeAll()
-            isBufferReady = false
-            bufferSignature = nil
-            statusMessage = "Applied Release 1.0.0 preset"
-            if currentVideoURL != nil, duration > 0, isPlaying {
-                player.play()
+            resetProcessingState(clearOverlay: false)
+            Task {
+                await frameProcessor.reset()
             }
-        }
-    }
-
-    func bufferPlayback(resumeAfterBuffer: Bool = true) {
-        guard !isBuffering, let url = currentVideoURL, duration > 0 else {
-            return
-        }
-
-        maskCache.configure(for: url, persistent: true)
-        player.pause()
-        isBuffering = true
-        bufferProgress = 0
-        statusMessage = "Buffering masks..."
-
-        bufferTask?.cancel()
-        let settingsSnapshot = effectSettings
-        let startTime = player.currentTime()
-        let signature = makeBufferSignature(videoURL: url, settings: settingsSnapshot)
-        isBufferReady = false
-        bufferSignature = signature
-
-        bufferTask = Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else { return }
-            do {
-                try await self.prebufferMasks(
-                    videoURL: url,
-                    startTime: startTime,
-                    settings: settingsSnapshot
-                )
-
-                await MainActor.run {
-                    self.isBuffering = false
-                    self.bufferProgress = 1.0
-                    self.isBufferReady = true
-                    self.bufferSignature = signature
-                    self.statusMessage = "Buffer ready"
-                    if resumeAfterBuffer {
-                        self.player.play()
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    self.isBuffering = false
-                    self.isBufferReady = false
-                    self.bufferSignature = nil
-                    self.statusMessage = "Buffering failed: \(error.localizedDescription)"
-                }
-            }
+        } else {
+            resetProcessingState(clearOverlay: false)
         }
     }
 
     private func startRenderLoop() {
-        let timer = DispatchSource.makeTimerSource(queue: renderQueue)
-        timer.schedule(deadline: .now(), repeating: 1.0 / 24.0, leeway: .milliseconds(10))
-        timer.setEventHandler { [weak self] in
-            self?.renderTick()
+        var link: CVDisplayLink?
+        guard CVDisplayLinkCreateWithActiveCGDisplays(&link) == kCVReturnSuccess,
+              let link
+        else {
+            return
         }
-        timer.resume()
-        renderTimer = timer
+
+        displayLink = link
+        let selfPointer = Unmanaged.passUnretained(self).toOpaque()
+        CVDisplayLinkSetOutputCallback(link, { _, _, _, _, _, userInfo in
+            guard let userInfo else { return kCVReturnSuccess }
+            let viewModel = Unmanaged<PlayerViewModel>.fromOpaque(userInfo).takeUnretainedValue()
+            viewModel.renderQueue.async {
+                viewModel.renderTick()
+            }
+            return kCVReturnSuccess
+        }, selfPointer)
+        CVDisplayLinkStart(link)
+    }
+
+    private func installTimeObserver() {
+        let interval = CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600)
+        timeObserverToken = player.addPeriodicTimeObserver(
+            forInterval: interval,
+            queue: .main
+        ) { [weak self] time in
+            guard let self else { return }
+            let seconds = time.seconds
+            if seconds.isFinite {
+                self.currentTime = seconds
+            }
+
+            if let duration = self.player.currentItem?.duration.seconds, duration.isFinite {
+                self.duration = duration
+            }
+        }
     }
 
     private func renderTick() {
-        guard effectSettings.isEnabled, !isBuffering, let item = player.currentItem else {
+        let settings = effectSettings
+        guard settings.isEnabled, player.currentItem != nil else {
             return
         }
 
@@ -294,252 +238,50 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             return
         }
 
-        let shouldAnalyzeThisFrame = itemTime.seconds.isFinite
-        guard shouldAnalyzeThisFrame else { return }
+        let timestamp = itemTime.seconds
+        guard timestamp.isFinite else { return }
+        pendingFrame = PendingFrame(pixelBuffer: pixelBuffer, itemTime: itemTime, settings: settings)
+        processLatestPendingFrame()
+    }
 
-        Task.detached(priority: .userInitiated) { [weak self] in
+    private func processLatestPendingFrame() {
+        guard currentRenderTask == nil, let pendingFrame else { return }
+
+        self.pendingFrame = nil
+        let frameProcessor = frameProcessor
+        let queue = renderQueue
+
+        currentRenderTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
-            await self.processFrame(pixelBuffer: pixelBuffer, timestamp: itemTime, duration: item.duration.seconds)
-        }
-    }
-
-    private func processFrame(pixelBuffer: CVPixelBuffer, timestamp: CMTime, duration: Double) async {
-        do {
-            let cachedMask = maskCache.mask(for: timestamp)
-            let rawMask: ForegroundMask
-
-            if let cachedMask {
-                rawMask = cachedMask
-            } else {
-                rawMask = try await buildMask(from: pixelBuffer, timestamp: timestamp)
-                maskCache.store(rawMask, for: timestamp, persistent: effectSettings.autoBufferPlayback)
+            defer {
+                queue.async { [weak self] in
+                    guard let self else { return }
+                    self.currentRenderTask = nil
+                    self.processLatestPendingFrame()
+                }
             }
 
-            let smoothedMask = try temporalSmoother.smooth(rawMask, factor: effectSettings.temporalSmoothing)
-            let cgImage = try renderer.renderOverlay(
-                frameBuffer: pixelBuffer,
-                foregroundMask: smoothedMask.pixelBuffer,
-                settings: effectSettings
-            )
-            let image = NSImage(cgImage: cgImage, size: .zero)
-            await MainActor.run {
-                self.overlayImage = image
-                self.currentTime = timestamp.seconds
-                self.duration = duration.isFinite ? duration : self.duration
-            }
-        } catch {
-            await MainActor.run {
-                self.statusMessage = "Effect pipeline error: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    private func buildMask(from pixelBuffer: CVPixelBuffer, timestamp: CMTime) async throws -> ForegroundMask {
-        switch effectSettings.maskMode {
-        case .visionOnly:
-            return try await foregroundMaskProvider.makeForegroundMask(from: pixelBuffer, timestamp: timestamp)
-        case .depthFused:
-            async let depthTask = depthEstimator.estimateDepth(from: pixelBuffer, timestamp: timestamp)
-            async let foregroundTask = foregroundMaskProvider.makeForegroundMask(from: pixelBuffer, timestamp: timestamp)
-            let depthMap = try? await depthTask
-            let foregroundMask = try? await foregroundTask
-            return try maskFusion.fuse(
-                depthMap: depthMap,
-                foregroundMask: foregroundMask,
-                cutoff: effectSettings.depthCutoff,
-                effectStrength: effectSettings.effectStrength
-            ) ?? foregroundMask ?? Self.makeEmptyMaskLike(pixelBuffer, timestamp: timestamp)
-        case .auto:
-            async let depthTask = depthEstimator.estimateDepth(from: pixelBuffer, timestamp: timestamp)
-            async let foregroundTask = foregroundMaskProvider.makeForegroundMask(from: pixelBuffer, timestamp: timestamp)
-            let depthMap = try? await depthTask
-            let foregroundMask = try? await foregroundTask
-            return try maskFusion.fuse(
-                depthMap: depthMap,
-                foregroundMask: foregroundMask,
-                cutoff: effectSettings.depthCutoff,
-                effectStrength: effectSettings.effectStrength
-            ) ?? foregroundMask ?? Self.makeEmptyMaskLike(pixelBuffer, timestamp: timestamp)
-        }
-    }
-
-    func noteManualOverride() {
-        if selectedPreset != .custom {
-            selectedPreset = .custom
-        }
-    }
-
-    private func prebufferMasks(videoURL: URL, startTime: CMTime, settings: EffectSettings) async throws {
-        let asset = AVURLAsset(url: videoURL)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = .zero
-        generator.requestedTimeToleranceAfter = .zero
-        generator.maximumSize = CGSize(width: 512, height: 512)
-
-        let durationSeconds = player.currentItem?.duration.seconds ?? duration
-        guard durationSeconds.isFinite, durationSeconds > startTime.seconds else {
-            throw DepthEstimatorError.modelUnavailable
-        }
-
-        let stepSeconds = max(1.0 / 15.0, settings.analysisInterval)
-        let totalFrames = max(1, Int(ceil((durationSeconds - startTime.seconds) / stepSeconds)) + 1)
-        let batchSize = max(2, min(4, ProcessInfo.processInfo.activeProcessorCount / 2))
-        var processedFrames = 0
-        var pendingFrames: [(CMTime, CGImage)] = []
-
-        for index in 0..<totalFrames {
-            try Task.checkCancellation()
-
-            let time = CMTime(seconds: startTime.seconds + Double(index) * stepSeconds, preferredTimescale: 600)
-            guard time.seconds <= durationSeconds + 0.001 else { break }
-
-            let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
-            pendingFrames.append((time, cgImage))
-
-            if pendingFrames.count >= batchSize {
-                try await Self.processPrebufferBatch(
-                    pendingFrames,
-                    settings: settings,
-                    maskCache: maskCache,
-                    depthEstimator: depthEstimator,
-                    foregroundMaskProvider: foregroundMaskProvider,
-                    maskFusion: maskFusion
+            do {
+                let cgImage = try await frameProcessor.processFrame(
+                    frameBuffer: pendingFrame.pixelBuffer,
+                    timestamp: pendingFrame.itemTime,
+                    settings: pendingFrame.settings
                 )
-                processedFrames += pendingFrames.count
-                pendingFrames.removeAll(keepingCapacity: true)
+
+                guard !Task.isCancelled else { return }
+
+                let image = NSImage(cgImage: cgImage, size: .zero)
                 await MainActor.run {
-                    self.bufferProgress = Double(processedFrames) / Double(totalFrames)
+                    guard self.effectSettings.isEnabled else { return }
+                    self.overlayImage = image
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.statusMessage = "Effect pipeline error: \(error.localizedDescription)"
                 }
             }
         }
-
-        if !pendingFrames.isEmpty {
-            try await Self.processPrebufferBatch(
-                pendingFrames,
-                settings: settings,
-                maskCache: maskCache,
-                depthEstimator: depthEstimator,
-                foregroundMaskProvider: foregroundMaskProvider,
-                maskFusion: maskFusion
-            )
-            processedFrames += pendingFrames.count
-            await MainActor.run {
-                self.bufferProgress = Double(processedFrames) / Double(totalFrames)
-            }
-        }
-    }
-
-    nonisolated private static func processPrebufferBatch(
-        _ frames: [(CMTime, CGImage)],
-        settings: EffectSettings,
-        maskCache: MaskCache,
-        depthEstimator: DepthEstimating,
-        foregroundMaskProvider: ForegroundMaskProviding,
-        maskFusion: MaskFusion
-    ) async throws {
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            for (timestamp, cgImage) in frames {
-                group.addTask {
-                    let pixelBuffer = try Self.makePixelBuffer(from: cgImage)
-                    let mask = try await Self.buildMaskForBuffer(
-                        pixelBuffer,
-                        timestamp: timestamp,
-                        settings: settings,
-                        depthEstimator: depthEstimator,
-                        foregroundMaskProvider: foregroundMaskProvider,
-                        maskFusion: maskFusion
-                    )
-                    maskCache.store(mask, for: timestamp, persistent: true)
-                }
-            }
-
-            try await group.waitForAll()
-        }
-    }
-
-    nonisolated private static func buildMaskForBuffer(
-        _ pixelBuffer: CVPixelBuffer,
-        timestamp: CMTime,
-        settings: EffectSettings,
-        depthEstimator: DepthEstimating,
-        foregroundMaskProvider: ForegroundMaskProviding,
-        maskFusion: MaskFusion
-    ) async throws -> ForegroundMask {
-        switch settings.maskMode {
-        case .visionOnly:
-            return try await foregroundMaskProvider.makeForegroundMask(from: pixelBuffer, timestamp: timestamp)
-        case .depthFused, .auto:
-            async let depthTask = depthEstimator.estimateDepth(from: pixelBuffer, timestamp: timestamp)
-            async let foregroundTask = foregroundMaskProvider.makeForegroundMask(from: pixelBuffer, timestamp: timestamp)
-            let depthMap = try? await depthTask
-            let foregroundMask = try? await foregroundTask
-            return try maskFusion.fuse(
-                depthMap: depthMap,
-                foregroundMask: foregroundMask,
-                cutoff: settings.depthCutoff,
-                effectStrength: settings.effectStrength
-            ) ?? foregroundMask ?? Self.makeEmptyMaskLike(pixelBuffer, timestamp: timestamp)
-        }
-    }
-
-    nonisolated private static func makePixelBuffer(from image: CGImage) throws -> CVPixelBuffer {
-        var buffer: CVPixelBuffer?
-        let attributes: [CFString: Any] = [
-            kCVPixelBufferCGImageCompatibilityKey: true,
-            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
-            kCVPixelBufferIOSurfacePropertiesKey: [:]
-        ]
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            image.width,
-            image.height,
-            kCVPixelFormatType_32BGRA,
-            attributes as CFDictionary,
-            &buffer
-        )
-        guard status == kCVReturnSuccess, let buffer else {
-            throw DepthEstimatorError.modelUnavailable
-        }
-
-        CVPixelBufferLockBaseAddress(buffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-
-        prebufferImageContext.render(
-            CIImage(cgImage: image),
-            to: buffer,
-            bounds: CGRect(x: 0, y: 0, width: image.width, height: image.height),
-            colorSpace: CGColorSpaceCreateDeviceRGB()
-        )
-        return buffer
-    }
-
-    nonisolated private static func makeEmptyMaskLike(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) -> ForegroundMask {
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-        var buffer: CVPixelBuffer?
-        let attributes: [CFString: Any] = [
-            kCVPixelBufferIOSurfacePropertiesKey: [:]
-        ]
-        _ = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            width,
-            height,
-            kCVPixelFormatType_OneComponent8,
-            attributes as CFDictionary,
-            &buffer
-        )
-
-        if let buffer {
-            CVPixelBufferLockBaseAddress(buffer, [])
-            defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-            if let base = CVPixelBufferGetBaseAddress(buffer) {
-                memset(base, 0, CVPixelBufferGetDataSize(buffer))
-            }
-            return ForegroundMask(pixelBuffer: buffer, confidence: 0, timestamp: timestamp)
-        }
-
-        return ForegroundMask(pixelBuffer: pixelBuffer, confidence: 0, timestamp: timestamp)
     }
 
     private func observePlayerState() {
@@ -554,68 +296,98 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         observationTokens.append(
             player.observe(\.currentItem, options: [.initial, .new]) { [weak self] _, _ in
                 Task { @MainActor in
-                    self?.temporalSmoother.reset()
-                    await self?.refreshDuration()
+                    self?.refreshDuration()
                 }
             }
         )
     }
 
-    private func refreshDuration() async {
+    private func refreshDuration() {
         guard let asset = player.currentItem?.asset else {
             duration = 0
             return
         }
 
-        let loadedDuration = try? await asset.load(.duration)
-        await MainActor.run {
-            self.duration = loadedDuration?.seconds ?? 0
+        Task {
+            let loadedDuration = try? await asset.load(.duration)
+            await MainActor.run {
+                self.duration = loadedDuration?.seconds ?? 0
+            }
         }
     }
 
-    private func startPlaybackAfterLoad() async {
-        await refreshDuration()
-
-        guard duration > 0 else {
-            statusMessage = currentVideoURL?.lastPathComponent ?? "Ready"
-            return
+    private func resetProcessingState(clearOverlay: Bool) {
+        renderQueue.async { [weak self] in
+            self?.currentRenderTask?.cancel()
+            self?.currentRenderTask = nil
+            self?.pendingFrame = nil
         }
 
-        if effectSettings.isEnabled && effectSettings.autoBufferPlayback {
-            bufferPlayback(resumeAfterBuffer: true)
-        } else {
-            statusMessage = currentVideoURL?.lastPathComponent ?? "Ready"
-            player.play()
+        if clearOverlay {
+            overlayImage = nil
         }
     }
 
-    private func isCurrentBufferValid() -> Bool {
-        guard isBufferReady, let currentVideoURL, effectSettings.autoBufferPlayback else { return false }
-        let currentSignature = makeBufferSignature(videoURL: currentVideoURL, settings: effectSettings)
-        return bufferSignature == currentSignature
+    func bestOverlayImage(for playbackTime: Double) -> NSImage? {
+        overlayImage
     }
 
-    private func makeBufferSignature(videoURL: URL, settings: EffectSettings) -> BufferSignature {
-        BufferSignature(
-            videoPath: videoURL.standardizedFileURL.path,
-            settingsKey: [
-                settings.isEnabled ? "1" : "0",
-                settings.viewMaskOnly ? "1" : "0",
-                settings.maskMode.rawValue,
-                settings.orientation.rawValue,
-                String(format: "%.4f", settings.depthCutoff),
-                String(format: "%.4f", settings.borderThickness),
-                settings.verticalBarsEnabled ? "1" : "0",
-                String(settings.verticalBarDivisionCount.rawValue),
-                String(format: "%.4f", settings.verticalBarThickness),
-                settings.horizontalBarsEnabled ? "1" : "0",
-                String(format: "%.4f", settings.horizontalBarThickness),
-                String(format: "%.4f", settings.edgeSoftness),
-                String(format: "%.4f", settings.effectStrength),
-                String(format: "%.4f", settings.temporalSmoothing),
-                String(format: "%.4f", settings.analysisScale),
-                String(format: "%.4f", settings.analysisInterval)
-            ].joined(separator: "|")
-        )
+    private func observeEffectSettings() {
+        $effectSettings
+            .removeDuplicates()
+            .sink { [weak self] settings in
+                guard let self else { return }
+                let snapshot = MaskSettingsSnapshot(settings: settings)
+                guard snapshot != self.lastPreprocessedMaskSettings else { return }
+                guard self.hasVideoLoaded, let asset = self.loadedAsset else { return }
+
+                self.lastPreprocessedMaskSettings = snapshot
+                self.overlayImage = nil
+                self.resetProcessingState(clearOverlay: false)
+                Task {
+                    await self.frameProcessor.reset()
+                }
+                self.startMaskPreprocessing(for: asset)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func startMaskPreprocessing(for asset: AVAsset) {
+        preprocessingTask?.cancel()
+        isPreprocessingMasks = true
+        preprocessingProgress = 0
+
+        let settings = effectSettings
+        preprocessingTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+
+            do {
+                try await self.maskPreprocessor.preprocess(
+                    asset: asset,
+                    settings: settings,
+                    timeline: self.maskTimeline
+                ) { progress, status in
+                    self.preprocessingProgress = progress
+                    self.statusMessage = status
+                }
+
+                await MainActor.run {
+                    self.isPreprocessingMasks = false
+                    self.preprocessingProgress = 1
+                    if self.hasVideoLoaded {
+                        self.statusMessage = "Masks ready"
+                    }
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    self.isPreprocessingMasks = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.isPreprocessingMasks = false
+                    self.statusMessage = "Mask preprocessing failed: \(error.localizedDescription)"
+                }
+            }
+        }
     }
 }

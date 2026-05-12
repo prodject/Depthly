@@ -1,4 +1,4 @@
-import AVFoundation
+import AVKit
 import SwiftUI
 
 struct VideoPlayerContainer: NSViewRepresentable {
@@ -6,84 +6,132 @@ struct VideoPlayerContainer: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PlayerContainerView {
         let view = PlayerContainerView()
-        view.bind(player: viewModel.player, overlayProvider: viewModel, settings: viewModel.effectSettings)
+        view.bind(player: viewModel.player, overlayProvider: viewModel, videoSize: viewModel.videoSize)
         return view
     }
 
     func updateNSView(_ nsView: PlayerContainerView, context: Context) {
-        nsView.bind(player: viewModel.player, overlayProvider: viewModel, settings: viewModel.effectSettings)
+        nsView.bind(player: viewModel.player, overlayProvider: viewModel, videoSize: viewModel.videoSize)
         nsView.needsDisplay = true
         nsView.subviews.forEach { $0.needsDisplay = true }
     }
 }
 
 final class PlayerContainerView: NSView {
-    private let playerView = PlayerLayerView()
+    private let playerView = AVPlayerView()
     private let barsView = SplitDepthBarsView()
     private let overlayView = SplitDepthOverlayView()
 
     private weak var player: AVPlayer?
     private weak var overlayProvider: PlayerOverlayProviding?
+    private var videoSize: CGSize = .zero
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
 
+        playerView.controlsStyle = .none
+        playerView.videoGravity = .resizeAspect
+        playerView.translatesAutoresizingMaskIntoConstraints = false
         playerView.wantsLayer = true
+
+        barsView.translatesAutoresizingMaskIntoConstraints = false
+        barsView.isHidden = false
+        barsView.contentRectProvider = { [weak self] in
+            guard let self else { return .zero }
+            let fitRect = self.fitRect(aspectRatio: self.videoAspectRatio, in: self.bounds)
+            return fitRect.isEmpty ? self.bounds : fitRect
+        }
+
+        overlayView.translatesAutoresizingMaskIntoConstraints = false
+        overlayView.contentRectProvider = { [weak self] in
+            guard let self else { return .zero }
+            let fitRect = self.fitRect(aspectRatio: self.videoAspectRatio, in: self.bounds)
+            return fitRect.isEmpty ? self.bounds : fitRect
+        }
 
         addSubview(playerView)
         addSubview(barsView)
         addSubview(overlayView)
-        needsLayout = true
+
+        NSLayoutConstraint.activate([
+            playerView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            playerView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            playerView.topAnchor.constraint(equalTo: topAnchor),
+            playerView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            barsView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            barsView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            barsView.topAnchor.constraint(equalTo: topAnchor),
+            barsView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            overlayView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            overlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            overlayView.topAnchor.constraint(equalTo: topAnchor),
+            overlayView.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func bind(player: AVPlayer, overlayProvider: PlayerOverlayProviding, settings: EffectSettings) {
+    func bind(player: AVPlayer, overlayProvider: PlayerOverlayProviding, videoSize: CGSize) {
         if self.player !== player {
             playerView.player = player
             self.player = player
         }
+
+        self.videoSize = videoSize
 
         if self.overlayProvider !== overlayProvider {
             self.overlayProvider = overlayProvider
             overlayView.overlayProvider = overlayProvider
         }
 
-        playerView.isHidden = settings.viewMaskOnly
-        barsView.settings = settings
-        barsView.isHidden = true
-        needsLayout = true
-        overlayView.needsDisplay = true
+        if let viewModel = overlayProvider as? PlayerViewModel {
+            barsView.settings = viewModel.effectSettings
+        } else {
+            barsView.settings = .default
+        }
+
         barsView.needsDisplay = true
+        overlayView.needsDisplay = true
+        needsLayout = true
     }
 
     override func layout() {
         super.layout()
-
-        playerView.frame = bounds
-        let videoRect = playerView.videoRect
-        let targetRect = videoRect.isEmpty ? bounds : videoRect
-        barsView.frame = targetRect
-        overlayView.frame = targetRect
-
-        barsView.needsDisplay = true
         overlayView.needsDisplay = true
     }
 
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        needsLayout = true
-        layoutSubtreeIfNeeded()
+    private var videoAspectRatio: CGFloat {
+        let width = max(videoSize.width, 1)
+        let height = max(videoSize.height, 1)
+        return width / height
+    }
+
+    private func fitRect(aspectRatio: CGFloat, in bounds: CGRect) -> CGRect {
+        guard aspectRatio > 0, bounds.width > 0, bounds.height > 0 else {
+            return bounds
+        }
+
+        let boundsAspect = bounds.width / max(bounds.height, 1)
+        if boundsAspect > aspectRatio {
+            let width = bounds.height * aspectRatio
+            let x = bounds.midX - width / 2
+            return CGRect(x: x, y: bounds.minY, width: width, height: bounds.height).integral
+        } else {
+            let height = bounds.width / aspectRatio
+            let y = bounds.midY - height / 2
+            return CGRect(x: bounds.minX, y: y, width: bounds.width, height: height).integral
+        }
     }
 }
 
 protocol PlayerOverlayProviding: AnyObject {
-    @MainActor
     var overlayImage: NSImage? { get }
+    var currentTime: Double { get }
+    func bestOverlayImage(for playbackTime: Double) -> NSImage?
 }
 
 final class SplitDepthOverlayView: NSView {
@@ -92,6 +140,8 @@ final class SplitDepthOverlayView: NSView {
             needsDisplay = true
         }
     }
+
+    var contentRectProvider: (() -> CGRect)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -107,38 +157,10 @@ final class SplitDepthOverlayView: NSView {
         super.draw(dirtyRect)
         NSColor.clear.setFill()
         dirtyRect.fill()
-        overlayProvider?.overlayImage?.draw(in: bounds)
-    }
-}
-
-final class PlayerLayerView: NSView {
-    override func makeBackingLayer() -> CALayer {
-        AVPlayerLayer()
-    }
-
-    var playerLayer: AVPlayerLayer {
-        guard let playerLayer = layer as? AVPlayerLayer else {
-            fatalError("PlayerLayerView must be layer-backed with AVPlayerLayer.")
-        }
-        return playerLayer
-    }
-
-    var player: AVPlayer? {
-        get { playerLayer.player }
-        set { playerLayer.player = newValue }
-    }
-
-    var videoRect: CGRect {
-        playerLayer.videoRect
-    }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        playerLayer.videoGravity = .resizeAspect
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        let playbackTime = overlayProvider?.currentTime ?? 0
+        let overlayImage = overlayProvider?.bestOverlayImage(for: playbackTime)
+        guard let overlayImage else { return }
+        let targetRect = contentRectProvider?() ?? bounds
+        overlayImage.draw(in: targetRect)
     }
 }

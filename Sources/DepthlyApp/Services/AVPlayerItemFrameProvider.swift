@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreMedia
 import CoreVideo
+import QuartzCore
 import Foundation
 
 final class AVPlayerItemFrameProvider: VideoFrameProvider {
@@ -27,11 +28,21 @@ final class AVPlayerItemFrameProvider: VideoFrameProvider {
     }
 
     func copyCurrentPixelBuffer(at time: CMTime) -> (pixelBuffer: CVPixelBuffer, itemTime: CMTime)? {
+        let hostTime = CACurrentMediaTime()
+        let fallbackTime = output.itemTime(forHostTime: hostTime)
+        let requestTime = time.isValid ? time : fallbackTime
         var itemTime = CMTime.zero
-        guard output.hasNewPixelBuffer(forItemTime: time),
-              let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: &itemTime)
+        guard output.hasNewPixelBuffer(forItemTime: requestTime),
+              let buffer = output.copyPixelBuffer(forItemTime: requestTime, itemTimeForDisplay: &itemTime)
         else {
-            return nil
+            guard fallbackTime.isValid,
+                  fallbackTime != requestTime,
+                  output.hasNewPixelBuffer(forItemTime: fallbackTime),
+                  let buffer = output.copyPixelBuffer(forItemTime: fallbackTime, itemTimeForDisplay: &itemTime)
+            else {
+                return nil
+            }
+            return (buffer, itemTime)
         }
         return (buffer, itemTime)
     }

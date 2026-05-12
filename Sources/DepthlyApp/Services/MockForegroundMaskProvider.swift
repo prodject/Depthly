@@ -4,20 +4,21 @@ import CoreVideo
 import Foundation
 
 final class MockForegroundMaskProvider: ForegroundMaskProviding {
-    private let outputWidth: Int
-    private let outputHeight: Int
+    private let longSide: Int
 
-    init(outputWidth: Int = 256, outputHeight: Int = 256) {
-        self.outputWidth = outputWidth
-        self.outputHeight = outputHeight
+    init(longSide: Int = 256) {
+        self.longSide = max(64, longSide)
     }
 
     func makeForegroundMask(from pixelBuffer: CVPixelBuffer, timestamp: CMTime) async throws -> ForegroundMask {
-        let mask = try makePixelBuffer(width: outputWidth, height: outputHeight)
-        let phase = (timestamp.seconds.isFinite ? timestamp.seconds : 0) * 0.9
+        let size = outputSize(for: pixelBuffer)
+        let mask = try makePixelBuffer(width: size.width, height: size.height)
+        let phase = (timestamp.seconds.isFinite ? timestamp.seconds : 0) * 0.15
 
-        let centerX = 0.5 + 0.12 * sin(phase * 0.7)
-        let centerY = 0.54 + 0.05 * cos(phase * 0.8)
+        // Keep the test mask mostly stable so it verifies the compositing path
+        // without introducing artificial motion jitter.
+        let centerX = 0.50 + 0.015 * sin(phase * 0.7)
+        let centerY = 0.54 + 0.010 * cos(phase * 0.8)
         let headRadius = 0.11
         let bodyWidth = 0.28
         let bodyHeight = 0.34
@@ -81,13 +82,29 @@ final class MockForegroundMaskProvider: ForegroundMaskProviding {
                     cornerRadius: 0.06
                 )
 
-                let motionBreathing = 0.88 + 0.12 * sin(phase * 2.1 + normalizedY * 8.0)
+                let motionBreathing = 0.95 + 0.05 * sin(phase * 1.4 + normalizedY * 4.0)
                 let maskValue = min(1.0, max(head, max(torso, max(shoulders, legs)))) * motionBreathing
                 pointer[y * bytesPerRow + x] = UInt8(clamping: Int(maskValue * 255.0))
             }
         }
 
         return ForegroundMask(pixelBuffer: mask, confidence: 0.95, timestamp: timestamp)
+    }
+
+    private func outputSize(for sourcePixelBuffer: CVPixelBuffer) -> (width: Int, height: Int) {
+        let sourceWidth = max(CVPixelBufferGetWidth(sourcePixelBuffer), 1)
+        let sourceHeight = max(CVPixelBufferGetHeight(sourcePixelBuffer), 1)
+        let aspectRatio = Double(sourceWidth) / Double(sourceHeight)
+
+        if aspectRatio >= 1.0 {
+            let width = longSide
+            let height = max(1, Int((Double(longSide) / aspectRatio).rounded()))
+            return (width, height)
+        } else {
+            let height = longSide
+            let width = max(1, Int((Double(longSide) * aspectRatio).rounded()))
+            return (width, height)
+        }
     }
 
     private func blob(x: Double, y: Double, centerX: Double, centerY: Double, radiusX: Double, radiusY: Double, falloff: Double) -> Double {
