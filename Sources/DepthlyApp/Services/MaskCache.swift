@@ -88,12 +88,21 @@ final class MaskCache: @unchecked Sendable {
     }
 
     func configure(for videoURL: URL) {
+        configure(for: videoURL, persistent: true)
+    }
+
+    func configure(for videoURL: URL, persistent: Bool) {
         lock.lock()
         defer { lock.unlock() }
 
         memoryStorage.removeAll(keepingCapacity: true)
         if let sessionDirectoryURL {
             try? fileManager.removeItem(at: sessionDirectoryURL)
+        }
+
+        guard persistent else {
+            sessionDirectoryURL = nil
+            return
         }
 
         let sessionName = Self.sessionIdentifier(for: videoURL)
@@ -103,12 +112,16 @@ final class MaskCache: @unchecked Sendable {
     }
 
     func store(_ mask: ForegroundMask, for time: CMTime) {
+        store(mask, for: time, persistent: true)
+    }
+
+    func store(_ mask: ForegroundMask, for time: CMTime, persistent: Bool) {
         let key = timeKey(for: time)
 
         lock.lock()
         memoryStorage[key] = mask
         trimMemoryIfNeeded()
-        let directory = sessionDirectoryURL
+        let directory = persistent ? sessionDirectoryURL : nil
         lock.unlock()
 
         guard let directory else { return }

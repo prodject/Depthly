@@ -76,7 +76,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         let item = AVPlayerItem(asset: asset)
 
         currentVideoURL = url
-        maskCache.configure(for: url)
+        maskCache.configure(for: url, persistent: effectSettings.autoBufferPlayback)
         frameProvider.detach()
         frameProvider.attach(to: item)
         temporalSmoother.reset()
@@ -87,7 +87,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         player.replaceCurrentItem(with: item)
         player.volume = Float(volume)
         player.pause()
-        statusMessage = "Preparing full buffer..."
+        statusMessage = effectSettings.autoBufferPlayback ? "Preparing full buffer..." : url.lastPathComponent
 
         Task { [weak self] in
             guard let self else { return }
@@ -99,7 +99,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         if isPlaying {
             player.pause()
         } else {
-            if effectSettings.isEnabled {
+            if effectSettings.isEnabled && effectSettings.autoBufferPlayback {
                 if isCurrentBufferValid() {
                     player.play()
                 } else {
@@ -200,6 +200,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         case .release100:
             effectSettings.isEnabled = true
             effectSettings.viewMaskOnly = false
+            effectSettings.autoBufferPlayback = false
             effectSettings.maskMode = .visionOnly
             effectSettings.orientation = .auto
             effectSettings.depthCutoff = 0.68
@@ -219,12 +220,9 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             isBufferReady = false
             bufferSignature = nil
             statusMessage = "Applied Release 1.0.0 preset"
-
-            guard currentVideoURL != nil, duration > 0 else {
-                return
+            if currentVideoURL != nil, duration > 0, isPlaying {
+                player.play()
             }
-
-            bufferPlayback(resumeAfterBuffer: isPlaying)
         }
     }
 
@@ -233,7 +231,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             return
         }
 
-        maskCache.configure(for: url)
+        maskCache.configure(for: url, persistent: true)
         player.pause()
         isBuffering = true
         bufferProgress = 0
@@ -314,7 +312,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
                 rawMask = cachedMask
             } else {
                 rawMask = try await buildMask(from: pixelBuffer, timestamp: timestamp)
-                maskCache.store(rawMask, for: timestamp)
+                maskCache.store(rawMask, for: timestamp, persistent: effectSettings.autoBufferPlayback)
             }
 
             let smoothedMask = try temporalSmoother.smooth(rawMask, factor: effectSettings.temporalSmoothing)
@@ -452,7 +450,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
                         foregroundMaskProvider: foregroundMaskProvider,
                         maskFusion: maskFusion
                     )
-                    maskCache.store(mask, for: timestamp)
+                    maskCache.store(mask, for: timestamp, persistent: true)
                 }
             }
 
@@ -583,7 +581,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             return
         }
 
-        if effectSettings.isEnabled {
+        if effectSettings.isEnabled && effectSettings.autoBufferPlayback {
             bufferPlayback(resumeAfterBuffer: true)
         } else {
             statusMessage = currentVideoURL?.lastPathComponent ?? "Ready"
@@ -592,7 +590,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     }
 
     private func isCurrentBufferValid() -> Bool {
-        guard isBufferReady, let currentVideoURL else { return false }
+        guard isBufferReady, let currentVideoURL, effectSettings.autoBufferPlayback else { return false }
         let currentSignature = makeBufferSignature(videoURL: currentVideoURL, settings: effectSettings)
         return bufferSignature == currentSignature
     }
