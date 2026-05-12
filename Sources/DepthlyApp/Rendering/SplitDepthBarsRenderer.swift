@@ -5,9 +5,12 @@ import simd
 
 struct SplitDepthBarUniforms {
     var viewportSize: SIMD2<Float>
-    var thickness: Float
-    var orientation: UInt32
-    var padding: SIMD2<Float> = .zero
+    var verticalThickness: Float
+    var horizontalThickness: Float
+    var verticalCount: UInt32
+    var verticalEnabled: UInt32
+    var horizontalEnabled: UInt32
+    var padding: UInt32 = 0
 }
 
 final class SplitDepthBarsRenderer {
@@ -20,9 +23,12 @@ final class SplitDepthBarsRenderer {
 
     struct SplitDepthBarUniforms {
         float2 viewportSize;
-        float thickness;
-        uint orientation;
-        float2 padding;
+        float verticalThickness;
+        float horizontalThickness;
+        uint verticalCount;
+        uint verticalEnabled;
+        uint horizontalEnabled;
+        uint padding;
     };
 
     struct VertexOut {
@@ -45,20 +51,26 @@ final class SplitDepthBarsRenderer {
                                           constant SplitDepthBarUniforms& uniforms [[buffer(0)]]) {
         float2 pixel = (in.position.xy * 0.5 + 0.5) * uniforms.viewportSize;
         float2 uv = pixel / max(uniforms.viewportSize, float2(1.0));
-        float thickness = clamp(uniforms.thickness, 0.0, 0.45);
+        bool draw = false;
 
-        bool vertical = uniforms.orientation == 1;
-        bool horizontal = uniforms.orientation == 2;
-        if (!vertical && !horizontal) {
-            vertical = uniforms.viewportSize.x >= uniforms.viewportSize.y;
-            horizontal = !vertical;
+        if (uniforms.verticalEnabled != 0 && uniforms.verticalCount >= 2u) {
+            float thickness = clamp(uniforms.verticalThickness, 0.0, 0.45);
+            float halfThickness = thickness * 0.5;
+            uint count = uniforms.verticalCount;
+            for (uint i = 1u; i < count; ++i) {
+                float center = float(i) / float(count);
+                if (abs(uv.x - center) <= halfThickness) {
+                    draw = true;
+                }
+            }
         }
 
-        bool draw = false;
-        if (vertical) {
-            draw = uv.x < thickness || uv.x > (1.0 - thickness);
-        } else {
-            draw = uv.y < thickness || uv.y > (1.0 - thickness);
+        if (uniforms.horizontalEnabled != 0) {
+            float thickness = clamp(uniforms.horizontalThickness, 0.0, 0.45);
+            float halfThickness = thickness * 0.5;
+            if (uv.y <= halfThickness || uv.y >= (1.0 - halfThickness)) {
+                draw = true;
+            }
         }
 
         return draw ? half4(0.0, 0.0, 0.0, 1.0) : half4(0.0, 0.0, 0.0, 0.0);
@@ -113,8 +125,11 @@ final class SplitDepthBarsRenderer {
 
         var uniforms = SplitDepthBarUniforms(
             viewportSize: SIMD2(Float(view.drawableSize.width), Float(view.drawableSize.height)),
-            thickness: Float(max(0.0, min(0.45, settings.borderThickness))),
-            orientation: orientationValue(for: settings, viewSize: view.bounds.size)
+            verticalThickness: Float(max(0.0, min(0.45, settings.verticalBarThickness))),
+            horizontalThickness: Float(max(0.0, min(0.45, settings.horizontalBarThickness))),
+            verticalCount: UInt32(settings.verticalBarDivisionCount.rawValue),
+            verticalEnabled: settings.verticalBarsEnabled ? 1 : 0,
+            horizontalEnabled: settings.horizontalBarsEnabled ? 1 : 0
         )
 
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SplitDepthBarUniforms>.stride, index: 0)
@@ -125,14 +140,4 @@ final class SplitDepthBarsRenderer {
         commandBuffer.commit()
     }
 
-    private func orientationValue(for settings: EffectSettings, viewSize: CGSize) -> UInt32 {
-        switch settings.orientation {
-        case .vertical:
-            return 1
-        case .horizontal:
-            return 2
-        case .auto:
-            return viewSize.width >= viewSize.height ? 1 : 2
-        }
-    }
 }

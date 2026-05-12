@@ -106,6 +106,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
 
     func setEffectEnabled(_ enabled: Bool) {
         effectSettings.isEnabled = enabled
+        selectedPreset = .custom
         if !enabled {
             overlayImage = nil
             temporalSmoother.reset()
@@ -116,6 +117,31 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         effectSettings.maskMode = mode
         temporalSmoother.reset()
         maskCache.removeAll()
+        selectedPreset = .custom
+    }
+
+    func setVerticalBarsEnabled(_ enabled: Bool) {
+        effectSettings.verticalBarsEnabled = enabled
+        selectedPreset = .custom
+    }
+
+    func setVerticalBarDivisionCount(_ count: SplitDepthVerticalDivisionCount) {
+        effectSettings.verticalBarDivisionCount = count
+        selectedPreset = .custom
+    }
+
+    func setVerticalBarThickness(_ value: Double) {
+        effectSettings.verticalBarThickness = value
+        selectedPreset = .custom
+    }
+
+    func setHorizontalBarsEnabled(_ enabled: Bool) {
+        effectSettings.horizontalBarsEnabled = enabled
+        selectedPreset = .custom
+    }
+
+    func setHorizontalBarThickness(_ value: Double) {
+        effectSettings.horizontalBarThickness = value
         selectedPreset = .custom
     }
 
@@ -130,6 +156,11 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             effectSettings.orientation = .auto
             effectSettings.depthCutoff = 0.68
             effectSettings.borderThickness = 0.08
+            effectSettings.verticalBarsEnabled = true
+            effectSettings.verticalBarDivisionCount = .three
+            effectSettings.verticalBarThickness = 0.06
+            effectSettings.horizontalBarsEnabled = true
+            effectSettings.horizontalBarThickness = 0.08
             effectSettings.edgeSoftness = 0.18
             effectSettings.effectStrength = 0.0
             effectSettings.temporalSmoothing = 0.0

@@ -135,28 +135,69 @@ struct ContentView: View {
                     Spacer()
                 }
                 GridRow {
-                    Text("Cutoff")
+                    Text("Vertical Bars")
+                    Toggle("", isOn: Binding(
+                        get: { viewModel.effectSettings.verticalBarsEnabled },
+                        set: { viewModel.setVerticalBarsEnabled($0) }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    Picker("", selection: Binding(
+                        get: { viewModel.effectSettings.verticalBarDivisionCount },
+                        set: { viewModel.setVerticalBarDivisionCount($0) }
+                    )) {
+                        ForEach(SplitDepthVerticalDivisionCount.allCases) { count in
+                            Text(count.displayName).tag(count)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(!viewModel.effectSettings.verticalBarsEnabled)
+                    Spacer()
+                }
+                GridRow {
+                    Text("Vertical Size")
                     Slider(value: Binding(
-                        get: { viewModel.effectSettings.depthCutoff },
-                        set: { viewModel.effectSettings.depthCutoff = $0 }
-                    ), in: 0...1)
-                    Text("\(viewModel.effectSettings.depthCutoff, specifier: "%.2f")")
+                        get: { viewModel.effectSettings.verticalBarThickness },
+                        set: { viewModel.setVerticalBarThickness($0) }
+                    ), in: 0.01...0.12)
+                    .disabled(!viewModel.effectSettings.verticalBarsEnabled)
+                    Text("\(viewModel.effectSettings.verticalBarThickness, specifier: "%.2f")")
                         .frame(width: 52, alignment: .trailing)
                 }
                 GridRow {
-                    Text("Border")
+                    Text("Horizontal Bars")
+                    Toggle("", isOn: Binding(
+                        get: { viewModel.effectSettings.horizontalBarsEnabled },
+                        set: { viewModel.setHorizontalBarsEnabled($0) }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    Spacer()
+                }
+                GridRow {
+                    Text("Horizontal Size")
                     Slider(value: Binding(
-                        get: { viewModel.effectSettings.borderThickness },
-                        set: { viewModel.effectSettings.borderThickness = $0 }
-                    ), in: 0.02...0.18)
-                    Text("\(viewModel.effectSettings.borderThickness, specifier: "%.2f")")
+                        get: { viewModel.effectSettings.horizontalBarThickness },
+                        set: { viewModel.setHorizontalBarThickness($0) }
+                    ), in: 0.01...0.12)
+                    .disabled(!viewModel.effectSettings.horizontalBarsEnabled)
+                    Text("\(viewModel.effectSettings.horizontalBarThickness, specifier: "%.2f")")
+                        .frame(width: 52, alignment: .trailing)
+                }
+                GridRow {
+                    Text("Cutoff")
+                    Slider(value: Binding(
+                        get: { viewModel.effectSettings.depthCutoff },
+                        set: { viewModel.effectSettings.depthCutoff = $0; viewModel.selectedPreset = .custom }
+                    ), in: 0...1)
+                    Text("\(viewModel.effectSettings.depthCutoff, specifier: "%.2f")")
                         .frame(width: 52, alignment: .trailing)
                 }
                 GridRow {
                     Text("Softness")
                     Slider(value: Binding(
                         get: { viewModel.effectSettings.edgeSoftness },
-                        set: { viewModel.effectSettings.edgeSoftness = $0 }
+                        set: { viewModel.effectSettings.edgeSoftness = $0; viewModel.selectedPreset = .custom }
                     ), in: 0...1)
                     Text("\(viewModel.effectSettings.edgeSoftness, specifier: "%.2f")")
                         .frame(width: 52, alignment: .trailing)
@@ -165,7 +206,7 @@ struct ContentView: View {
                     Text("Strength")
                     Slider(value: Binding(
                         get: { viewModel.effectSettings.effectStrength },
-                        set: { viewModel.effectSettings.effectStrength = $0 }
+                        set: { viewModel.effectSettings.effectStrength = $0; viewModel.selectedPreset = .custom }
                     ), in: 0...1)
                     Text("\(viewModel.effectSettings.effectStrength, specifier: "%.2f")")
                         .frame(width: 52, alignment: .trailing)
@@ -174,24 +215,10 @@ struct ContentView: View {
                     Text("Smoothing")
                     Slider(value: Binding(
                         get: { viewModel.effectSettings.temporalSmoothing },
-                        set: { viewModel.effectSettings.temporalSmoothing = $0 }
+                        set: { viewModel.effectSettings.temporalSmoothing = $0; viewModel.selectedPreset = .custom }
                     ), in: 0...1)
                     Text("\(viewModel.effectSettings.temporalSmoothing, specifier: "%.2f")")
                         .frame(width: 52, alignment: .trailing)
-                }
-                GridRow {
-                    Text("Orientation")
-                    Picker("", selection: Binding(
-                        get: { viewModel.effectSettings.orientation },
-                        set: { viewModel.effectSettings.orientation = $0 }
-                    )) {
-                        ForEach(SplitDepthOrientation.allCases) { orientation in
-                            Text(orientation.displayName).tag(orientation)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    Spacer()
                 }
             }
         }
