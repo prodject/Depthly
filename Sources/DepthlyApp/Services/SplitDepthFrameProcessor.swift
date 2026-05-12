@@ -6,19 +6,22 @@ import Foundation
 actor SplitDepthFrameProcessor {
     private let foregroundMaskProvider: ForegroundMaskProviding
     private let renderer: SplitDepthRenderer
-    private let temporalSmoother = TemporalMaskSmoother()
+    private let stabilizer = ForegroundMaskStabilizer()
+    private let timeline: ForegroundMaskTimeline
     private var lastAnalyzedTime: Double = -.infinity
 
     init(
-        foregroundMaskProvider: ForegroundMaskProviding = AdaptiveForegroundMaskProvider(),
+        foregroundMaskProvider: ForegroundMaskProviding = HumanForegroundMaskProvider(),
+        timeline: ForegroundMaskTimeline = ForegroundMaskTimeline(),
         renderer: SplitDepthRenderer = SplitDepthRenderer()
     ) {
         self.foregroundMaskProvider = foregroundMaskProvider
+        self.timeline = timeline
         self.renderer = renderer
     }
 
     func reset() {
-        temporalSmoother.reset()
+        stabilizer.reset()
         lastAnalyzedTime = -.infinity
     }
 
@@ -34,76 +37,24 @@ actor SplitDepthFrameProcessor {
         timestamp: CMTime,
         settings: EffectSettings
     ) async throws -> CGImage {
-        let rawMask = try await foregroundMaskProvider.makeForegroundMask(from: frameBuffer, timestamp: timestamp)
-        let stabilizedMask = try stabilize(mask: rawMask, settings: settings)
+        var foregroundMask = try await timeline.mask(at: timestamp, maxGap: max(settings.analysisInterval * 2.5, 0.25))
+
+        if foregroundMask == nil, shouldAnalyzeFrame(at: timestamp, interval: settings.analysisInterval) {
+            let rawMask = try await foregroundMaskProvider.makeForegroundMask(from: frameBuffer, timestamp: timestamp)
+            let stabilizedMask = try stabilize(mask: rawMask, settings: settings)
+            foregroundMask = stabilizedMask
+        }
+
         return try renderer.renderOverlay(
             frameBuffer: frameBuffer,
-            foregroundMask: stabilizedMask.pixelBuffer,
+            foregroundMask: foregroundMask?.pixelBuffer,
             settings: settings
         )
     }
 
     private func stabilize(mask: ForegroundMask, settings: EffectSettings) throws -> ForegroundMask {
-        let depthMask = DepthMask(pixelBuffer: mask.pixelBuffer, confidence: mask.confidence, timestamp: mask.timestamp)
-        let smoothed = try temporalSmoother.smooth(depthMask, factor: settings.temporalSmoothing)
-        let thresholded = try threshold(smoothed.pixelBuffer, cutoff: settings.depthCutoff)
-        let outputMask = ForegroundMask(pixelBuffer: thresholded, confidence: smoothed.confidence, timestamp: mask.timestamp)
-
+        let outputMask = try stabilizer.stabilize(mask: mask, settings: settings)
         lastAnalyzedTime = mask.timestamp.seconds
         return outputMask
-    }
-
-    private func threshold(_ mask: CVPixelBuffer, cutoff: Double) throws -> CVPixelBuffer {
-        let result = try makePixelBufferLike(mask)
-
-        CVPixelBufferLockBaseAddress(mask, .readOnly)
-        CVPixelBufferLockBaseAddress(result, [])
-        defer {
-            CVPixelBufferUnlockBaseAddress(result, [])
-            CVPixelBufferUnlockBaseAddress(mask, .readOnly)
-        }
-
-        guard
-            let sourceBase = CVPixelBufferGetBaseAddress(mask),
-            let resultBase = CVPixelBufferGetBaseAddress(result)
-        else {
-            throw DepthEstimatorError.modelUnavailable
-        }
-
-        let sourcePointer = sourceBase.assumingMemoryBound(to: UInt8.self)
-        let resultPointer = resultBase.assumingMemoryBound(to: UInt8.self)
-        let width = CVPixelBufferGetWidth(mask)
-        let height = CVPixelBufferGetHeight(mask)
-        let bytesPerRow = CVPixelBufferGetBytesPerRow(mask)
-        let thresholdValue = UInt8(clamping: Int(max(0.0, min(1.0, cutoff)) * 255.0))
-
-        for y in 0..<height {
-            let row = y * bytesPerRow
-            for x in 0..<width {
-                let value = sourcePointer[row + x]
-                resultPointer[row + x] = value >= thresholdValue ? 255 : 0
-            }
-        }
-
-        return result
-    }
-
-    private func makePixelBufferLike(_ source: CVPixelBuffer) throws -> CVPixelBuffer {
-        var buffer: CVPixelBuffer?
-        let attributes: [CFString: Any] = [
-            kCVPixelBufferIOSurfacePropertiesKey: [:]
-        ]
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            CVPixelBufferGetWidth(source),
-            CVPixelBufferGetHeight(source),
-            kCVPixelFormatType_OneComponent8,
-            attributes as CFDictionary,
-            &buffer
-        )
-        guard status == kCVReturnSuccess, let buffer else {
-            throw DepthEstimatorError.modelUnavailable
-        }
-        return buffer
     }
 }

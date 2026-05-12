@@ -38,6 +38,11 @@ final class PlayerContainerView: NSView {
 
         barsView.translatesAutoresizingMaskIntoConstraints = false
         barsView.isHidden = false
+        barsView.contentRectProvider = { [weak self] in
+            guard let self else { return .zero }
+            let fitRect = self.fitRect(aspectRatio: self.videoAspectRatio, in: self.bounds)
+            return fitRect.isEmpty ? self.bounds : fitRect
+        }
 
         overlayView.translatesAutoresizingMaskIntoConstraints = false
         overlayView.contentRectProvider = { [weak self] in
@@ -83,7 +88,12 @@ final class PlayerContainerView: NSView {
             overlayView.overlayProvider = overlayProvider
         }
 
-        barsView.settings = viewModelSettings(from: overlayProvider)
+        if let viewModel = overlayProvider as? PlayerViewModel {
+            barsView.settings = viewModel.effectSettings
+        } else {
+            barsView.settings = .default
+        }
+
         barsView.needsDisplay = true
         overlayView.needsDisplay = true
         needsLayout = true
@@ -116,17 +126,12 @@ final class PlayerContainerView: NSView {
             return CGRect(x: bounds.minX, y: y, width: bounds.width, height: height).integral
         }
     }
-
-    private func viewModelSettings(from overlayProvider: PlayerOverlayProviding) -> EffectSettings {
-        if let viewModel = overlayProvider as? PlayerViewModel {
-            return viewModel.effectSettings
-        }
-        return .default
-    }
 }
 
 protocol PlayerOverlayProviding: AnyObject {
     var overlayImage: NSImage? { get }
+    var currentTime: Double { get }
+    func bestOverlayImage(for playbackTime: Double) -> NSImage?
 }
 
 final class SplitDepthOverlayView: NSView {
@@ -152,7 +157,9 @@ final class SplitDepthOverlayView: NSView {
         super.draw(dirtyRect)
         NSColor.clear.setFill()
         dirtyRect.fill()
-        guard let overlayImage = overlayProvider?.overlayImage else { return }
+        let playbackTime = overlayProvider?.currentTime ?? 0
+        let overlayImage = overlayProvider?.bestOverlayImage(for: playbackTime)
+        guard let overlayImage else { return }
         let targetRect = contentRectProvider?() ?? bounds
         overlayImage.draw(in: targetRect)
     }

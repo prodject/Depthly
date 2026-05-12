@@ -28,10 +28,9 @@ final class AVPlayerItemFrameProvider: VideoFrameProvider {
     }
 
     func copyCurrentPixelBuffer(at time: CMTime) -> (pixelBuffer: CVPixelBuffer, itemTime: CMTime)? {
-        let exactTime = time
         let hostTime = CACurrentMediaTime()
         let fallbackTime = output.itemTime(forHostTime: hostTime)
-        let requestTime = exactTime.isValid ? exactTime : fallbackTime
+        let requestTime = time.isValid ? time : fallbackTime
         var itemTime = CMTime.zero
         guard output.hasNewPixelBuffer(forItemTime: requestTime),
               let buffer = output.copyPixelBuffer(forItemTime: requestTime, itemTimeForDisplay: &itemTime)

@@ -16,20 +16,27 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     @Published var statusMessage: String = "Open a local video to begin."
     @Published var hasVideoLoaded: Bool = false
     @Published var videoSize: CGSize = .zero
+    @Published var preprocessingProgress: Double = 0
+    @Published var isPreprocessingMasks: Bool = false
 
     let player = AVPlayer()
 
     private let frameProvider = AVPlayerItemFrameProvider()
-    private let frameProcessor = SplitDepthFrameProcessor()
+    private let maskTimeline = ForegroundMaskTimeline()
+    private let frameProcessor: SplitDepthFrameProcessor
+    private let maskPreprocessor = VideoMaskPreprocessor()
     private let airPlayCoordinator = AirPlayCoordinator()
 
     private var displayLink: CVDisplayLink?
     private let renderQueue = DispatchQueue(label: "Depthly.render.queue", qos: .userInitiated)
     private var currentRenderTask: Task<Void, Never>?
-    private var lastAnalysisTimestamp: Double = -.infinity
+    private var preprocessingTask: Task<Void, Never>?
     private var pendingFrame: PendingFrame?
     private var observationTokens: [NSKeyValueObservation] = []
     private var timeObserverToken: Any?
+    private var cancellables: Set<AnyCancellable> = []
+    private var loadedAsset: AVAsset?
+    private var lastPreprocessedMaskSettings = MaskSettingsSnapshot(settings: .default)
 
     private struct PendingFrame {
         let pixelBuffer: CVPixelBuffer
@@ -37,13 +44,27 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         let settings: EffectSettings
     }
 
+    private struct MaskSettingsSnapshot: Equatable {
+        let depthCutoff: Double
+        let edgeSoftness: Double
+        let temporalSmoothing: Double
+
+        init(settings: EffectSettings) {
+            depthCutoff = settings.depthCutoff
+            edgeSoftness = settings.edgeSoftness
+            temporalSmoothing = settings.temporalSmoothing
+        }
+    }
+
     init() {
+        frameProcessor = SplitDepthFrameProcessor(timeline: maskTimeline)
         player.automaticallyWaitsToMinimizeStalling = true
         airPlayCoordinator.configure(player: player)
         volume = Double(player.volume)
         startRenderLoop()
         installTimeObserver()
         observePlayerState()
+        observeEffectSettings()
     }
 
     deinit {
@@ -59,6 +80,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             self?.currentRenderTask = nil
             self?.pendingFrame = nil
         }
+        preprocessingTask?.cancel()
     }
 
     func openVideo() {
@@ -76,6 +98,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
 
     func load(url: URL) {
         let asset = AVAsset(url: url)
+        loadedAsset = asset
         let item = AVPlayerItem(asset: asset)
 
         frameProvider.detach()
@@ -90,11 +113,15 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         currentTime = 0
         duration = 0
         statusMessage = url.lastPathComponent
+        preprocessingProgress = 0
+        isPreprocessingMasks = false
+        lastPreprocessedMaskSettings = MaskSettingsSnapshot(settings: effectSettings)
         refreshDuration()
         resetProcessingState(clearOverlay: false)
         Task {
             await frameProcessor.reset()
         }
+        startMaskPreprocessing(for: asset)
         Task {
             do {
                 let tracks = try await asset.loadTracks(withMediaType: .video)
@@ -138,6 +165,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         player.seek(to: target) { [weak self] _ in
             DispatchQueue.main.async {
                 self?.currentTime = target.seconds
+                self?.overlayImage = nil
             }
         }
     }
@@ -212,9 +240,6 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
 
         let timestamp = itemTime.seconds
         guard timestamp.isFinite else { return }
-        guard timestamp - lastAnalysisTimestamp >= settings.analysisInterval else { return }
-
-        lastAnalysisTimestamp = timestamp
         pendingFrame = PendingFrame(pixelBuffer: pixelBuffer, itemTime: itemTime, settings: settings)
         processLatestPendingFrame()
     }
@@ -293,7 +318,6 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
 
     private func resetProcessingState(clearOverlay: Bool) {
         renderQueue.async { [weak self] in
-            self?.lastAnalysisTimestamp = -.infinity
             self?.currentRenderTask?.cancel()
             self?.currentRenderTask = nil
             self?.pendingFrame = nil
@@ -301,6 +325,69 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
 
         if clearOverlay {
             overlayImage = nil
+        }
+    }
+
+    func bestOverlayImage(for playbackTime: Double) -> NSImage? {
+        overlayImage
+    }
+
+    private func observeEffectSettings() {
+        $effectSettings
+            .removeDuplicates()
+            .sink { [weak self] settings in
+                guard let self else { return }
+                let snapshot = MaskSettingsSnapshot(settings: settings)
+                guard snapshot != self.lastPreprocessedMaskSettings else { return }
+                guard self.hasVideoLoaded, let asset = self.loadedAsset else { return }
+
+                self.lastPreprocessedMaskSettings = snapshot
+                self.overlayImage = nil
+                self.resetProcessingState(clearOverlay: false)
+                Task {
+                    await self.frameProcessor.reset()
+                }
+                self.startMaskPreprocessing(for: asset)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func startMaskPreprocessing(for asset: AVAsset) {
+        preprocessingTask?.cancel()
+        isPreprocessingMasks = true
+        preprocessingProgress = 0
+
+        let settings = effectSettings
+        preprocessingTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+
+            do {
+                try await self.maskPreprocessor.preprocess(
+                    asset: asset,
+                    settings: settings,
+                    timeline: self.maskTimeline
+                ) { progress, status in
+                    self.preprocessingProgress = progress
+                    self.statusMessage = status
+                }
+
+                await MainActor.run {
+                    self.isPreprocessingMasks = false
+                    self.preprocessingProgress = 1
+                    if self.hasVideoLoaded {
+                        self.statusMessage = "Masks ready"
+                    }
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    self.isPreprocessingMasks = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.isPreprocessingMasks = false
+                    self.statusMessage = "Mask preprocessing failed: \(error.localizedDescription)"
+                }
+            }
         }
     }
 }

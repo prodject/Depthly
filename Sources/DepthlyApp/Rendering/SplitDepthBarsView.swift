@@ -7,6 +7,8 @@ final class SplitDepthBarsView: NSView {
         }
     }
 
+    var contentRectProvider: (() -> CGRect)?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -32,34 +34,36 @@ final class SplitDepthBarsView: NSView {
 
         let bounds = self.bounds
         guard bounds.width > 0, bounds.height > 0 else { return }
+        let drawRect = contentRectProvider?() ?? bounds
+        guard drawRect.width > 0, drawRect.height > 0 else { return }
 
         NSColor.black.setFill()
 
         let border = max(0.0, min(0.25, settings.borderThickness))
-        let borderX = max(1, bounds.width * border)
-        let borderY = max(1, bounds.height * border)
+        let borderX = max(1, drawRect.width * border)
+        let borderY = max(1, drawRect.height * border)
 
-        NSBezierPath(rect: CGRect(x: 0, y: 0, width: borderX, height: bounds.height)).fill()
-        NSBezierPath(rect: CGRect(x: bounds.width - borderX, y: 0, width: borderX, height: bounds.height)).fill()
-        NSBezierPath(rect: CGRect(x: 0, y: 0, width: bounds.width, height: borderY)).fill()
-        NSBezierPath(rect: CGRect(x: 0, y: bounds.height - borderY, width: bounds.width, height: borderY)).fill()
+        NSBezierPath(rect: CGRect(x: drawRect.minX, y: drawRect.minY, width: borderX, height: drawRect.height)).fill()
+        NSBezierPath(rect: CGRect(x: drawRect.maxX - borderX, y: drawRect.minY, width: borderX, height: drawRect.height)).fill()
+        NSBezierPath(rect: CGRect(x: drawRect.minX, y: drawRect.minY, width: drawRect.width, height: borderY)).fill()
+        NSBezierPath(rect: CGRect(x: drawRect.minX, y: drawRect.maxY - borderY, width: drawRect.width, height: borderY)).fill()
 
         if settings.verticalBarsEnabled {
             let thickness = max(0.0, min(0.45, settings.verticalBarThickness))
-            let barWidth = max(1, bounds.width * thickness)
+            let barWidth = max(1, drawRect.width * thickness)
             let divisions = 3
             for index in 1..<divisions {
-                let center = bounds.width * CGFloat(index) / CGFloat(divisions)
-                let x = max(0, center - barWidth / 2)
-                NSBezierPath(rect: CGRect(x: x, y: 0, width: barWidth, height: bounds.height)).fill()
+                let center = drawRect.minX + drawRect.width * CGFloat(index) / CGFloat(divisions)
+                let x = max(drawRect.minX, center - barWidth / 2)
+                NSBezierPath(rect: CGRect(x: x, y: drawRect.minY, width: barWidth, height: drawRect.height)).fill()
             }
         }
 
         if settings.horizontalBarsEnabled {
             let thickness = max(0.0, min(0.45, settings.horizontalBarThickness))
-            let barHeight = max(1, bounds.height * thickness)
-            NSBezierPath(rect: CGRect(x: 0, y: 0, width: bounds.width, height: barHeight)).fill()
-            NSBezierPath(rect: CGRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)).fill()
+            let barHeight = max(1, drawRect.height * thickness)
+            NSBezierPath(rect: CGRect(x: drawRect.minX, y: drawRect.minY, width: drawRect.width, height: barHeight)).fill()
+            NSBezierPath(rect: CGRect(x: drawRect.minX, y: drawRect.maxY - barHeight, width: drawRect.width, height: barHeight)).fill()
         }
     }
 }

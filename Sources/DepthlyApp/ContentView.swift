@@ -81,6 +81,12 @@ struct ContentView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+            if viewModel.isPreprocessingMasks {
+                Text("Mask precompute: \(Int(viewModel.preprocessingProgress * 100))%")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary.opacity(0.9))
+                    .lineLimit(1)
+            }
             Text(viewModel.hasVideoLoaded ? "Local playback · split-depth preview" : "Open a local video to begin")
                 .font(.caption2)
                 .foregroundStyle(.secondary.opacity(0.9))

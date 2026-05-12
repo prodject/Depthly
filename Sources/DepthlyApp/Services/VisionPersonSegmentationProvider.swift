@@ -9,7 +9,7 @@ final class VisionPersonSegmentationProvider: ForegroundMaskProviding {
 
     func makeForegroundMask(from pixelBuffer: CVPixelBuffer, timestamp: CMTime) async throws -> ForegroundMask {
         let request = VNGeneratePersonSegmentationRequest()
-        request.qualityLevel = .balanced
+        request.qualityLevel = .accurate
         request.outputPixelFormat = kCVPixelFormatType_OneComponent8
         request.usesCPUOnly = false
 
