@@ -82,6 +82,11 @@ struct ContentView: View {
                 ), in: 0...1)
                 .frame(width: 220)
 
+                Button(viewModel.isBuffering ? "Buffering..." : "Buffer") {
+                    viewModel.bufferPlayback()
+                }
+                .disabled(viewModel.isBuffering)
+
                 Spacer()
 
                 Toggle("Split Depth", isOn: Binding(
@@ -90,12 +95,31 @@ struct ContentView: View {
                 ))
                 .toggleStyle(.switch)
             }
+
+            if viewModel.isBuffering {
+                ProgressView(value: viewModel.bufferProgress)
+                    .progressViewStyle(.linear)
+            }
         }
     }
 
     private var effectPanel: some View {
         GroupBox("Effect Controls") {
             Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 12) {
+                GridRow {
+                    Text("Mask Mode")
+                    Picker("", selection: Binding(
+                        get: { viewModel.effectSettings.maskMode },
+                        set: { viewModel.setMaskMode($0) }
+                    )) {
+                        ForEach(MaskPipelineMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Spacer()
+                }
                 GridRow {
                     Text("Cutoff")
                     Slider(value: Binding(
