@@ -6,12 +6,12 @@ struct VideoPlayerContainer: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PlayerContainerView {
         let view = PlayerContainerView()
-        view.bind(player: viewModel.player, overlayProvider: viewModel)
+        view.bind(player: viewModel.player, overlayProvider: viewModel, settings: viewModel.effectSettings)
         return view
     }
 
     func updateNSView(_ nsView: PlayerContainerView, context: Context) {
-        nsView.bind(player: viewModel.player, overlayProvider: viewModel)
+        nsView.bind(player: viewModel.player, overlayProvider: viewModel, settings: viewModel.effectSettings)
         nsView.needsDisplay = true
         nsView.subviews.forEach { $0.needsDisplay = true }
     }
@@ -19,6 +19,7 @@ struct VideoPlayerContainer: NSViewRepresentable {
 
 final class PlayerContainerView: NSView {
     private let playerView = AVPlayerView()
+    private let barsView = SplitDepthBarsView()
     private let overlayView = SplitDepthOverlayView()
 
     private weak var player: AVPlayer?
@@ -34,9 +35,11 @@ final class PlayerContainerView: NSView {
         playerView.translatesAutoresizingMaskIntoConstraints = false
         playerView.wantsLayer = true
 
+        barsView.translatesAutoresizingMaskIntoConstraints = false
         overlayView.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(playerView)
+        addSubview(barsView)
         addSubview(overlayView)
 
         NSLayoutConstraint.activate([
@@ -44,6 +47,10 @@ final class PlayerContainerView: NSView {
             playerView.trailingAnchor.constraint(equalTo: trailingAnchor),
             playerView.topAnchor.constraint(equalTo: topAnchor),
             playerView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            barsView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            barsView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            barsView.topAnchor.constraint(equalTo: topAnchor),
+            barsView.bottomAnchor.constraint(equalTo: bottomAnchor),
             overlayView.leadingAnchor.constraint(equalTo: leadingAnchor),
             overlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
             overlayView.topAnchor.constraint(equalTo: topAnchor),
@@ -55,7 +62,7 @@ final class PlayerContainerView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func bind(player: AVPlayer, overlayProvider: PlayerOverlayProviding) {
+    func bind(player: AVPlayer, overlayProvider: PlayerOverlayProviding, settings: EffectSettings) {
         if self.player !== player {
             playerView.player = player
             self.player = player
@@ -66,7 +73,10 @@ final class PlayerContainerView: NSView {
             overlayView.overlayProvider = overlayProvider
         }
 
+        barsView.settings = settings
+        barsView.isHidden = !settings.isEnabled
         overlayView.needsDisplay = true
+        barsView.needsDisplay = true
     }
 }
 
