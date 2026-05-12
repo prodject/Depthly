@@ -6,7 +6,7 @@ final class MaskCache {
     private var storage: [Int64: ForegroundMask] = [:]
     private let capacity: Int
 
-    init(capacity: Int = 48) {
+    init(capacity: Int = 0) {
         self.capacity = capacity
     }
 
@@ -43,6 +43,7 @@ final class MaskCache {
     }
 
     private func trimIfNeeded() {
+        guard capacity > 0 else { return }
         guard storage.count > capacity else { return }
         let excessCount = storage.count - capacity
         let keysToRemove = storage.keys.sorted().prefix(excessCount)

@@ -77,7 +77,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         player.replaceCurrentItem(with: item)
         player.volume = Float(volume)
         player.pause()
-        statusMessage = url.lastPathComponent
+        statusMessage = "Preparing full buffer..."
 
         Task { [weak self] in
             guard let self else { return }
@@ -331,14 +331,19 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         generator.requestedTimeToleranceAfter = .zero
         generator.maximumSize = CGSize(width: 512, height: 512)
 
-        let stepSeconds = max(1.0 / 15.0, settings.analysisInterval)
-        let frameCount = 12
-        let times: [CMTime] = (0..<frameCount).map { index in
-            CMTime(seconds: startTime.seconds + Double(index) * stepSeconds, preferredTimescale: 600)
+        let durationSeconds = player.currentItem?.duration.seconds ?? duration
+        guard durationSeconds.isFinite, durationSeconds > startTime.seconds else {
+            throw DepthEstimatorError.modelUnavailable
         }
 
-        for (index, time) in times.enumerated() {
+        let stepSeconds = max(1.0 / 15.0, settings.analysisInterval)
+        let totalFrames = max(1, Int(ceil((durationSeconds - startTime.seconds) / stepSeconds)) + 1)
+
+        for index in 0..<totalFrames {
             try Task.checkCancellation()
+
+            let time = CMTime(seconds: startTime.seconds + Double(index) * stepSeconds, preferredTimescale: 600)
+            guard time.seconds <= durationSeconds + 0.001 else { break }
 
             let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
             let pixelBuffer = try makePixelBuffer(from: cgImage)
@@ -346,7 +351,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             maskCache.store(mask, for: time)
 
             await MainActor.run {
-                self.bufferProgress = Double(index + 1) / Double(frameCount)
+                self.bufferProgress = Double(index + 1) / Double(totalFrames)
             }
         }
     }
