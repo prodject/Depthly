@@ -1,4 +1,4 @@
-import AVKit
+import AVFoundation
 import SwiftUI
 
 struct VideoPlayerContainer: NSViewRepresentable {
@@ -18,7 +18,7 @@ struct VideoPlayerContainer: NSViewRepresentable {
 }
 
 final class PlayerContainerView: NSView {
-    private let playerView = AVPlayerView()
+    private let playerView = PlayerLayerView()
     private let barsView = SplitDepthBarsView()
     private let overlayView = SplitDepthOverlayView()
 
@@ -30,32 +30,12 @@ final class PlayerContainerView: NSView {
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
 
-        playerView.controlsStyle = .none
-        playerView.videoGravity = .resizeAspect
-        playerView.translatesAutoresizingMaskIntoConstraints = false
         playerView.wantsLayer = true
-
-        barsView.translatesAutoresizingMaskIntoConstraints = false
-        overlayView.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(playerView)
         addSubview(barsView)
         addSubview(overlayView)
-
-        NSLayoutConstraint.activate([
-            playerView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            playerView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            playerView.topAnchor.constraint(equalTo: topAnchor),
-            playerView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            barsView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            barsView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            barsView.topAnchor.constraint(equalTo: topAnchor),
-            barsView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            overlayView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            overlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            overlayView.topAnchor.constraint(equalTo: topAnchor),
-            overlayView.bottomAnchor.constraint(equalTo: bottomAnchor)
-        ])
+        needsLayout = true
     }
 
     required init?(coder: NSCoder) {
@@ -73,10 +53,31 @@ final class PlayerContainerView: NSView {
             overlayView.overlayProvider = overlayProvider
         }
 
+        playerView.isHidden = settings.viewMaskOnly
         barsView.settings = settings
-        barsView.isHidden = !settings.isEnabled || (!settings.verticalBarsEnabled && !settings.horizontalBarsEnabled)
+        barsView.isHidden = true
+        needsLayout = true
         overlayView.needsDisplay = true
         barsView.needsDisplay = true
+    }
+
+    override func layout() {
+        super.layout()
+
+        playerView.frame = bounds
+        let videoRect = playerView.videoRect
+        let targetRect = videoRect.isEmpty ? bounds : videoRect
+        barsView.frame = targetRect
+        overlayView.frame = targetRect
+
+        barsView.needsDisplay = true
+        overlayView.needsDisplay = true
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsLayout = true
+        layoutSubtreeIfNeeded()
     }
 }
 
@@ -107,5 +108,37 @@ final class SplitDepthOverlayView: NSView {
         NSColor.clear.setFill()
         dirtyRect.fill()
         overlayProvider?.overlayImage?.draw(in: bounds)
+    }
+}
+
+final class PlayerLayerView: NSView {
+    override func makeBackingLayer() -> CALayer {
+        AVPlayerLayer()
+    }
+
+    var playerLayer: AVPlayerLayer {
+        guard let playerLayer = layer as? AVPlayerLayer else {
+            fatalError("PlayerLayerView must be layer-backed with AVPlayerLayer.")
+        }
+        return playerLayer
+    }
+
+    var player: AVPlayer? {
+        get { playerLayer.player }
+        set { playerLayer.player = newValue }
+    }
+
+    var videoRect: CGRect {
+        playerLayer.videoRect
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        playerLayer.videoGravity = .resizeAspect
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 }

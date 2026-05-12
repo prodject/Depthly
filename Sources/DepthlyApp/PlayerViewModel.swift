@@ -113,6 +113,11 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         }
     }
 
+    func setViewMaskOnly(_ enabled: Bool) {
+        effectSettings.viewMaskOnly = enabled
+        selectedPreset = .custom
+    }
+
     func setMaskMode(_ mode: MaskPipelineMode) {
         effectSettings.maskMode = mode
         temporalSmoother.reset()
@@ -152,6 +157,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             break
         case .release100:
             effectSettings.isEnabled = true
+            effectSettings.viewMaskOnly = false
             effectSettings.maskMode = .visionOnly
             effectSettings.orientation = .auto
             effectSettings.depthCutoff = 0.68

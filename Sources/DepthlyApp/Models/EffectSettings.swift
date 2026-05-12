@@ -2,6 +2,7 @@ import Foundation
 
 struct EffectSettings: Equatable {
     var isEnabled: Bool = true
+    var viewMaskOnly: Bool = false
     var maskMode: MaskPipelineMode = .auto
     var orientation: SplitDepthOrientation = .auto
     var depthCutoff: Double = 0.68

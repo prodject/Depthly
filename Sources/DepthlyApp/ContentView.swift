@@ -94,6 +94,12 @@ struct ContentView: View {
                     set: { viewModel.setEffectEnabled($0) }
                 ))
                 .toggleStyle(.switch)
+
+                Toggle("View Mask", isOn: Binding(
+                    get: { viewModel.effectSettings.viewMaskOnly },
+                    set: { viewModel.setViewMaskOnly($0) }
+                ))
+                .toggleStyle(.switch)
             }
 
             if viewModel.isBuffering {
