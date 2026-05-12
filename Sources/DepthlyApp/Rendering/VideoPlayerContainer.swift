@@ -74,7 +74,7 @@ final class PlayerContainerView: NSView {
         }
 
         barsView.settings = settings
-        barsView.isHidden = !settings.isEnabled
+        barsView.isHidden = true
         overlayView.needsDisplay = true
         barsView.needsDisplay = true
     }
