@@ -5,6 +5,10 @@ import Foundation
 final class TemporalMaskSmoother {
     private var previousMask: ForegroundMask?
 
+    func reset() {
+        previousMask = nil
+    }
+
     func smooth(_ mask: ForegroundMask, factor: Double) throws -> ForegroundMask {
         defer { previousMask = mask }
 

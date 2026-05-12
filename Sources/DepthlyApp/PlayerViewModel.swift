@@ -61,6 +61,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
 
         frameProvider.detach()
         frameProvider.attach(to: item)
+        temporalSmoother.reset()
 
         player.replaceCurrentItem(with: item)
         player.volume = Float(volume)
@@ -82,6 +83,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         guard duration > 0 else { return }
         let clamped = max(0.0, min(1.0, fraction))
         let target = CMTime(seconds: duration * clamped, preferredTimescale: 600)
+        temporalSmoother.reset()
         player.seek(to: target)
     }
 
@@ -94,6 +96,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         effectSettings.isEnabled = enabled
         if !enabled {
             overlayImage = nil
+            temporalSmoother.reset()
         }
     }
 
@@ -172,6 +175,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         observationTokens.append(
             player.observe(\.currentItem, options: [.initial, .new]) { [weak self] _, _ in
                 Task { @MainActor in
+                    self?.temporalSmoother.reset()
                     self?.refreshDuration()
                 }
             }

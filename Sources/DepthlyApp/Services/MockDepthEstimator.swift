@@ -46,7 +46,7 @@ final class MockDepthEstimator: DepthEstimating {
             }
         }
 
-        return DepthMap(pixelBuffer: depth, confidence: 0.65, timestamp: timestamp)
+        return DepthMap(pixelBuffer: depth, confidence: 0.65, timestamp: timestamp, source: .synthetic)
     }
 
     private func makePixelBuffer(width: Int, height: Int) throws -> CVPixelBuffer {

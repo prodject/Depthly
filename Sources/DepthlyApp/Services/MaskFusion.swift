@@ -9,27 +9,40 @@ final class MaskFusion {
         cutoff: Double,
         effectStrength: Double
     ) throws -> ForegroundMask? {
-        switch (depthMap, foregroundMask) {
-        case let (depth?, foreground?):
-            let depthThreshold = try threshold(depth.pixelBuffer, cutoff: cutoff)
-            let result = try blend(depthThreshold, foreground.pixelBuffer, weight: effectStrength)
-            return ForegroundMask(
-                pixelBuffer: result,
-                confidence: max(depth.confidence, foreground.confidence),
-                timestamp: max(depth.timestamp, foreground.timestamp)
-            )
-        case let (depth?, nil):
-            let depthThreshold = try threshold(depth.pixelBuffer, cutoff: cutoff)
-            return ForegroundMask(
-                pixelBuffer: depthThreshold,
-                confidence: depth.confidence,
-                timestamp: depth.timestamp
-            )
-        case let (nil, foreground?):
-            return foreground
-        case (nil, nil):
+        guard let foregroundMask else {
+            if let depthMap {
+                let depthThreshold = try threshold(depthMap.pixelBuffer, cutoff: cutoff)
+                return ForegroundMask(
+                    pixelBuffer: depthThreshold,
+                    confidence: depthMap.confidence,
+                    timestamp: depthMap.timestamp
+                )
+            }
             return nil
         }
+
+        guard let depthMap else {
+            return foregroundMask
+        }
+
+        // Synthetic depth is only a fallback for validating the pipeline.
+        // Do not let it distort the segmentation mask. Only fuse when a real
+        // depth model is available.
+        guard depthMap.source == .coreML else {
+            return foregroundMask
+        }
+
+        if effectStrength <= 0.0 {
+            return foregroundMask
+        }
+
+        let depthThreshold = try threshold(depthMap.pixelBuffer, cutoff: cutoff)
+        let result = try blend(depthThreshold, foregroundMask.pixelBuffer, weight: effectStrength)
+        return ForegroundMask(
+            pixelBuffer: result,
+            confidence: max(depthMap.confidence, foregroundMask.confidence),
+            timestamp: max(depthMap.timestamp, foregroundMask.timestamp)
+        )
     }
 
     private func threshold(_ source: CVPixelBuffer, cutoff: Double) throws -> CVPixelBuffer {
