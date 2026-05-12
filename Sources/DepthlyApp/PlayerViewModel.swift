@@ -19,6 +19,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     @Published var selectedPreset: EffectPreset = .custom
     @Published var isBuffering: Bool = false
     @Published var bufferProgress: Double = 0
+    @Published var isBufferReady: Bool = false
     @Published var statusMessage: String = "Open a local video to begin."
 
     let player = AVPlayer()
@@ -69,10 +70,12 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         let item = AVPlayerItem(asset: asset)
 
         currentVideoURL = url
+        maskCache.configure(for: url)
         frameProvider.detach()
         frameProvider.attach(to: item)
         temporalSmoother.reset()
-        maskCache.removeAll()
+        maskCache.clearMemory()
+        isBufferReady = false
 
         player.replaceCurrentItem(with: item)
         player.volume = Float(volume)
@@ -90,7 +93,11 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             player.pause()
         } else {
             if effectSettings.isEnabled {
-                bufferPlayback(resumeAfterBuffer: true)
+                if isBufferReady {
+                    player.play()
+                } else {
+                    bufferPlayback(resumeAfterBuffer: true)
+                }
             } else {
                 player.play()
             }
@@ -102,7 +109,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         let clamped = max(0.0, min(1.0, fraction))
         let target = CMTime(seconds: duration * clamped, preferredTimescale: 600)
         temporalSmoother.reset()
-        maskCache.removeAll()
+        maskCache.clearMemory()
         player.seek(to: target)
     }
 
@@ -129,31 +136,42 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         effectSettings.maskMode = mode
         temporalSmoother.reset()
         maskCache.removeAll()
+        isBufferReady = false
         selectedPreset = .custom
     }
 
     func setVerticalBarsEnabled(_ enabled: Bool) {
         effectSettings.verticalBarsEnabled = enabled
+        maskCache.removeAll()
+        isBufferReady = false
         selectedPreset = .custom
     }
 
     func setVerticalBarDivisionCount(_ count: SplitDepthVerticalDivisionCount) {
         effectSettings.verticalBarDivisionCount = count
+        maskCache.removeAll()
+        isBufferReady = false
         selectedPreset = .custom
     }
 
     func setVerticalBarThickness(_ value: Double) {
         effectSettings.verticalBarThickness = value
+        maskCache.removeAll()
+        isBufferReady = false
         selectedPreset = .custom
     }
 
     func setHorizontalBarsEnabled(_ enabled: Bool) {
         effectSettings.horizontalBarsEnabled = enabled
+        maskCache.removeAll()
+        isBufferReady = false
         selectedPreset = .custom
     }
 
     func setHorizontalBarThickness(_ value: Double) {
         effectSettings.horizontalBarThickness = value
+        maskCache.removeAll()
+        isBufferReady = false
         selectedPreset = .custom
     }
 
@@ -181,6 +199,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             effectSettings.analysisInterval = 1.0 / 12.0
             temporalSmoother.reset()
             maskCache.removeAll()
+            isBufferReady = false
             statusMessage = "Applied Release 1.0.0 preset"
         }
     }
@@ -198,6 +217,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         bufferTask?.cancel()
         let settingsSnapshot = effectSettings
         let startTime = player.currentTime()
+        isBufferReady = false
 
         bufferTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
@@ -211,6 +231,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
                 await MainActor.run {
                     self.isBuffering = false
                     self.bufferProgress = 1.0
+                    self.isBufferReady = true
                     self.statusMessage = "Buffer ready"
                     if resumeAfterBuffer {
                         self.player.play()
@@ -219,10 +240,8 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             } catch {
                 await MainActor.run {
                     self.isBuffering = false
+                    self.isBufferReady = false
                     self.statusMessage = "Buffering failed: \(error.localizedDescription)"
-                    if resumeAfterBuffer {
-                        self.player.play()
-                    }
                 }
             }
         }
@@ -302,7 +321,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
                 foregroundMask: foregroundMask,
                 cutoff: effectSettings.depthCutoff,
                 effectStrength: effectSettings.effectStrength
-            ) ?? foregroundMask ?? makeEmptyMaskLike(pixelBuffer, timestamp: timestamp)
+            ) ?? foregroundMask ?? Self.makeEmptyMaskLike(pixelBuffer, timestamp: timestamp)
         case .auto:
             async let depthTask = depthEstimator.estimateDepth(from: pixelBuffer, timestamp: timestamp)
             async let foregroundTask = foregroundMaskProvider.makeForegroundMask(from: pixelBuffer, timestamp: timestamp)
@@ -313,7 +332,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
                 foregroundMask: foregroundMask,
                 cutoff: effectSettings.depthCutoff,
                 effectStrength: effectSettings.effectStrength
-            ) ?? foregroundMask ?? makeEmptyMaskLike(pixelBuffer, timestamp: timestamp)
+            ) ?? foregroundMask ?? Self.makeEmptyMaskLike(pixelBuffer, timestamp: timestamp)
         }
     }
 
@@ -338,6 +357,9 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
 
         let stepSeconds = max(1.0 / 15.0, settings.analysisInterval)
         let totalFrames = max(1, Int(ceil((durationSeconds - startTime.seconds) / stepSeconds)) + 1)
+        let batchSize = max(2, min(4, ProcessInfo.processInfo.activeProcessorCount / 2))
+        var processedFrames = 0
+        var pendingFrames: [(CMTime, CGImage)] = []
 
         for index in 0..<totalFrames {
             try Task.checkCancellation()
@@ -346,17 +368,77 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             guard time.seconds <= durationSeconds + 0.001 else { break }
 
             let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
-            let pixelBuffer = try makePixelBuffer(from: cgImage)
-            let mask = try await buildMaskForBuffer(pixelBuffer, timestamp: time, settings: settings)
-            maskCache.store(mask, for: time)
+            pendingFrames.append((time, cgImage))
 
+            if pendingFrames.count >= batchSize {
+                try await Self.processPrebufferBatch(
+                    pendingFrames,
+                    settings: settings,
+                    maskCache: maskCache,
+                    depthEstimator: depthEstimator,
+                    foregroundMaskProvider: foregroundMaskProvider,
+                    maskFusion: maskFusion
+                )
+                processedFrames += pendingFrames.count
+                pendingFrames.removeAll(keepingCapacity: true)
+                await MainActor.run {
+                    self.bufferProgress = Double(processedFrames) / Double(totalFrames)
+                }
+            }
+        }
+
+        if !pendingFrames.isEmpty {
+            try await Self.processPrebufferBatch(
+                pendingFrames,
+                settings: settings,
+                maskCache: maskCache,
+                depthEstimator: depthEstimator,
+                foregroundMaskProvider: foregroundMaskProvider,
+                maskFusion: maskFusion
+            )
+            processedFrames += pendingFrames.count
             await MainActor.run {
-                self.bufferProgress = Double(index + 1) / Double(totalFrames)
+                self.bufferProgress = Double(processedFrames) / Double(totalFrames)
             }
         }
     }
 
-    private func buildMaskForBuffer(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime, settings: EffectSettings) async throws -> ForegroundMask {
+    nonisolated private static func processPrebufferBatch(
+        _ frames: [(CMTime, CGImage)],
+        settings: EffectSettings,
+        maskCache: MaskCache,
+        depthEstimator: DepthEstimating,
+        foregroundMaskProvider: ForegroundMaskProviding,
+        maskFusion: MaskFusion
+    ) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for (timestamp, cgImage) in frames {
+                group.addTask {
+                    let pixelBuffer = try Self.makePixelBuffer(from: cgImage)
+                    let mask = try await Self.buildMaskForBuffer(
+                        pixelBuffer,
+                        timestamp: timestamp,
+                        settings: settings,
+                        depthEstimator: depthEstimator,
+                        foregroundMaskProvider: foregroundMaskProvider,
+                        maskFusion: maskFusion
+                    )
+                    maskCache.store(mask, for: timestamp)
+                }
+            }
+
+            try await group.waitForAll()
+        }
+    }
+
+    nonisolated private static func buildMaskForBuffer(
+        _ pixelBuffer: CVPixelBuffer,
+        timestamp: CMTime,
+        settings: EffectSettings,
+        depthEstimator: DepthEstimating,
+        foregroundMaskProvider: ForegroundMaskProviding,
+        maskFusion: MaskFusion
+    ) async throws -> ForegroundMask {
         switch settings.maskMode {
         case .visionOnly:
             return try await foregroundMaskProvider.makeForegroundMask(from: pixelBuffer, timestamp: timestamp)
@@ -370,11 +452,11 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
                 foregroundMask: foregroundMask,
                 cutoff: settings.depthCutoff,
                 effectStrength: settings.effectStrength
-            ) ?? foregroundMask ?? makeEmptyMaskLike(pixelBuffer, timestamp: timestamp)
+            ) ?? foregroundMask ?? Self.makeEmptyMaskLike(pixelBuffer, timestamp: timestamp)
         }
     }
 
-    private func makePixelBuffer(from image: CGImage) throws -> CVPixelBuffer {
+    nonisolated private static func makePixelBuffer(from image: CGImage) throws -> CVPixelBuffer {
         var buffer: CVPixelBuffer?
         let attributes: [CFString: Any] = [
             kCVPixelBufferCGImageCompatibilityKey: true,
@@ -405,7 +487,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         return buffer
     }
 
-    private func makeEmptyMaskLike(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) -> ForegroundMask {
+    nonisolated private static func makeEmptyMaskLike(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) -> ForegroundMask {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         var buffer: CVPixelBuffer?
