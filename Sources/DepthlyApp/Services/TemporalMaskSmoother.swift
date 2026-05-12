@@ -4,10 +4,13 @@ import Foundation
 final class TemporalMaskSmoother {
     private var previousMask: CVPixelBuffer?
 
-    func smooth(_ mask: DepthMask, factor: Double) throws -> DepthMask {
-        defer { previousMask = mask.pixelBuffer }
+    func reset() {
+        previousMask = nil
+    }
 
-        guard let previousMask else {
+    func smooth(_ mask: DepthMask, factor: Double) throws -> DepthMask {
+        guard let previousMask = self.previousMask else {
+            self.previousMask = mask.pixelBuffer
             return mask
         }
 
@@ -49,6 +52,7 @@ final class TemporalMaskSmoother {
             }
         }
 
+        self.previousMask = result
         return DepthMask(pixelBuffer: result, confidence: mask.confidence, timestamp: mask.timestamp)
     }
 

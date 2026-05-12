@@ -6,7 +6,7 @@ import Foundation
 actor SplitDepthFrameProcessor {
     private let foregroundMaskProvider: ForegroundMaskProviding
     private let renderer: SplitDepthRenderer
-    private var previousMask: ForegroundMask?
+    private let temporalSmoother = TemporalMaskSmoother()
     private var lastAnalyzedTime: Double = -.infinity
 
     init(
@@ -18,7 +18,7 @@ actor SplitDepthFrameProcessor {
     }
 
     func reset() {
-        previousMask = nil
+        temporalSmoother.reset()
         lastAnalyzedTime = -.infinity
     }
 
@@ -44,79 +44,13 @@ actor SplitDepthFrameProcessor {
     }
 
     private func stabilize(mask: ForegroundMask, settings: EffectSettings) throws -> ForegroundMask {
-        let thresholded = try threshold(mask.pixelBuffer, cutoff: settings.depthCutoff)
-        let currentMask = ForegroundMask(pixelBuffer: thresholded, confidence: mask.confidence, timestamp: mask.timestamp)
+        let depthMask = DepthMask(pixelBuffer: mask.pixelBuffer, confidence: mask.confidence, timestamp: mask.timestamp)
+        let smoothed = try temporalSmoother.smooth(depthMask, factor: settings.temporalSmoothing)
+        let thresholded = try threshold(smoothed.pixelBuffer, cutoff: settings.depthCutoff)
+        let outputMask = ForegroundMask(pixelBuffer: thresholded, confidence: smoothed.confidence, timestamp: mask.timestamp)
 
-        let outputMask: ForegroundMask
-        if let previousMask, buffersMatch(previousMask.pixelBuffer, currentMask.pixelBuffer) {
-            let blended = try blend(
-                previousMask.pixelBuffer,
-                currentMask.pixelBuffer,
-                smoothing: settings.temporalSmoothing
-            )
-            outputMask = ForegroundMask(
-                pixelBuffer: blended,
-                confidence: max(previousMask.confidence, currentMask.confidence),
-                timestamp: mask.timestamp
-            )
-        } else {
-            outputMask = currentMask
-        }
-
-        previousMask = outputMask
         lastAnalyzedTime = mask.timestamp.seconds
         return outputMask
-    }
-
-    private func buffersMatch(_ lhs: CVPixelBuffer, _ rhs: CVPixelBuffer) -> Bool {
-        CVPixelBufferGetWidth(lhs) == CVPixelBufferGetWidth(rhs) &&
-        CVPixelBufferGetHeight(lhs) == CVPixelBufferGetHeight(rhs)
-    }
-
-    private func blend(_ lhs: CVPixelBuffer, _ rhs: CVPixelBuffer, smoothing: Double) throws -> CVPixelBuffer {
-        let result = try makePixelBufferLike(rhs)
-
-        CVPixelBufferLockBaseAddress(lhs, .readOnly)
-        CVPixelBufferLockBaseAddress(rhs, .readOnly)
-        CVPixelBufferLockBaseAddress(result, [])
-        defer {
-            CVPixelBufferUnlockBaseAddress(result, [])
-            CVPixelBufferUnlockBaseAddress(rhs, .readOnly)
-            CVPixelBufferUnlockBaseAddress(lhs, .readOnly)
-        }
-
-        guard
-            let leftBase = CVPixelBufferGetBaseAddress(lhs),
-            let rightBase = CVPixelBufferGetBaseAddress(rhs),
-            let resultBase = CVPixelBufferGetBaseAddress(result)
-        else {
-            throw DepthEstimatorError.modelUnavailable
-        }
-
-        let leftPointer = leftBase.assumingMemoryBound(to: UInt8.self)
-        let rightPointer = rightBase.assumingMemoryBound(to: UInt8.self)
-        let resultPointer = resultBase.assumingMemoryBound(to: UInt8.self)
-
-        let width = CVPixelBufferGetWidth(rhs)
-        let height = CVPixelBufferGetHeight(rhs)
-        let leftBytesPerRow = CVPixelBufferGetBytesPerRow(lhs)
-        let rightBytesPerRow = CVPixelBufferGetBytesPerRow(rhs)
-        let resultBytesPerRow = CVPixelBufferGetBytesPerRow(result)
-        let alpha = max(0.0, min(1.0, smoothing))
-
-        for y in 0..<height {
-            let leftRow = y * leftBytesPerRow
-            let rightRow = y * rightBytesPerRow
-            let resultRow = y * resultBytesPerRow
-            for x in 0..<width {
-                let previousValue = Double(leftPointer[leftRow + x]) / 255.0
-                let currentValue = Double(rightPointer[rightRow + x]) / 255.0
-                let smoothed = previousValue * alpha + currentValue * (1.0 - alpha)
-                resultPointer[resultRow + x] = UInt8(clamping: Int(smoothed * 255.0))
-            }
-        }
-
-        return result
     }
 
     private func threshold(_ mask: CVPixelBuffer, cutoff: Double) throws -> CVPixelBuffer {

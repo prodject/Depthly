@@ -2,6 +2,7 @@ import AVFoundation
 import AppKit
 import Combine
 import CoreMedia
+import CoreVideo
 import Foundation
 import UniformTypeIdentifiers
 
@@ -22,13 +23,19 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     private let frameProcessor = SplitDepthFrameProcessor()
     private let airPlayCoordinator = AirPlayCoordinator()
 
-    private var renderTimer: DispatchSourceTimer?
+    private var displayLink: CVDisplayLink?
     private let renderQueue = DispatchQueue(label: "Depthly.render.queue", qos: .userInitiated)
     private var currentRenderTask: Task<Void, Never>?
     private var lastAnalysisTimestamp: Double = -.infinity
-    private var isProcessingFrame = false
+    private var pendingFrame: PendingFrame?
     private var observationTokens: [NSKeyValueObservation] = []
     private var timeObserverToken: Any?
+
+    private struct PendingFrame {
+        let pixelBuffer: CVPixelBuffer
+        let itemTime: CMTime
+        let settings: EffectSettings
+    }
 
     init() {
         player.automaticallyWaitsToMinimizeStalling = true
@@ -40,7 +47,9 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     }
 
     deinit {
-        renderTimer?.cancel()
+        if let displayLink {
+            CVDisplayLinkStop(displayLink)
+        }
         if let timeObserverToken {
             player.removeTimeObserver(timeObserverToken)
         }
@@ -48,7 +57,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         renderQueue.async { [weak self] in
             self?.currentRenderTask?.cancel()
             self?.currentRenderTask = nil
-            self?.isProcessingFrame = false
+            self?.pendingFrame = nil
         }
     }
 
@@ -152,13 +161,24 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     }
 
     private func startRenderLoop() {
-        let timer = DispatchSource.makeTimerSource(queue: renderQueue)
-        timer.schedule(deadline: .now(), repeating: 1.0 / 30.0, leeway: .milliseconds(10))
-        timer.setEventHandler { [weak self] in
-            self?.renderTick()
+        var link: CVDisplayLink?
+        guard CVDisplayLinkCreateWithActiveCGDisplays(&link) == kCVReturnSuccess,
+              let link
+        else {
+            return
         }
-        timer.resume()
-        renderTimer = timer
+
+        displayLink = link
+        let selfPointer = Unmanaged.passUnretained(self).toOpaque()
+        CVDisplayLinkSetOutputCallback(link, { _, _, _, _, _, userInfo in
+            guard let userInfo else { return kCVReturnSuccess }
+            let viewModel = Unmanaged<PlayerViewModel>.fromOpaque(userInfo).takeUnretainedValue()
+            viewModel.renderQueue.async {
+                viewModel.renderTick()
+            }
+            return kCVReturnSuccess
+        }, selfPointer)
+        CVDisplayLinkStart(link)
     }
 
     private func installTimeObserver() {
@@ -193,21 +213,34 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         let timestamp = itemTime.seconds
         guard timestamp.isFinite else { return }
         guard timestamp - lastAnalysisTimestamp >= settings.analysisInterval else { return }
-        guard !isProcessingFrame else { return }
 
         lastAnalysisTimestamp = timestamp
-        isProcessingFrame = true
+        pendingFrame = PendingFrame(pixelBuffer: pixelBuffer, itemTime: itemTime, settings: settings)
+        processLatestPendingFrame()
+    }
 
+    private func processLatestPendingFrame() {
+        guard currentRenderTask == nil, let pendingFrame else { return }
+
+        self.pendingFrame = nil
         let frameProcessor = frameProcessor
+        let queue = renderQueue
 
         currentRenderTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
+            defer {
+                queue.async { [weak self] in
+                    guard let self else { return }
+                    self.currentRenderTask = nil
+                    self.processLatestPendingFrame()
+                }
+            }
 
             do {
                 let cgImage = try await frameProcessor.processFrame(
-                    frameBuffer: pixelBuffer,
-                    timestamp: itemTime,
-                    settings: settings
+                    frameBuffer: pendingFrame.pixelBuffer,
+                    timestamp: pendingFrame.itemTime,
+                    settings: pendingFrame.settings
                 )
 
                 guard !Task.isCancelled else { return }
@@ -222,10 +255,6 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
                 await MainActor.run {
                     self.statusMessage = "Effect pipeline error: \(error.localizedDescription)"
                 }
-            }
-
-            await MainActor.run {
-                self.isProcessingFrame = false
             }
         }
     }
@@ -267,7 +296,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             self?.lastAnalysisTimestamp = -.infinity
             self?.currentRenderTask?.cancel()
             self?.currentRenderTask = nil
-            self?.isProcessingFrame = false
+            self?.pendingFrame = nil
         }
 
         if clearOverlay {

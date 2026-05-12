@@ -19,6 +19,7 @@ struct VideoPlayerContainer: NSViewRepresentable {
 
 final class PlayerContainerView: NSView {
     private let playerView = AVPlayerView()
+    private let barsView = SplitDepthBarsView()
     private let overlayView = SplitDepthOverlayView()
 
     private weak var player: AVPlayer?
@@ -35,6 +36,9 @@ final class PlayerContainerView: NSView {
         playerView.translatesAutoresizingMaskIntoConstraints = false
         playerView.wantsLayer = true
 
+        barsView.translatesAutoresizingMaskIntoConstraints = false
+        barsView.isHidden = false
+
         overlayView.translatesAutoresizingMaskIntoConstraints = false
         overlayView.contentRectProvider = { [weak self] in
             guard let self else { return .zero }
@@ -43,6 +47,7 @@ final class PlayerContainerView: NSView {
         }
 
         addSubview(playerView)
+        addSubview(barsView)
         addSubview(overlayView)
 
         NSLayoutConstraint.activate([
@@ -50,6 +55,10 @@ final class PlayerContainerView: NSView {
             playerView.trailingAnchor.constraint(equalTo: trailingAnchor),
             playerView.topAnchor.constraint(equalTo: topAnchor),
             playerView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            barsView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            barsView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            barsView.topAnchor.constraint(equalTo: topAnchor),
+            barsView.bottomAnchor.constraint(equalTo: bottomAnchor),
             overlayView.leadingAnchor.constraint(equalTo: leadingAnchor),
             overlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
             overlayView.topAnchor.constraint(equalTo: topAnchor),
@@ -74,6 +83,8 @@ final class PlayerContainerView: NSView {
             overlayView.overlayProvider = overlayProvider
         }
 
+        barsView.settings = viewModelSettings(from: overlayProvider)
+        barsView.needsDisplay = true
         overlayView.needsDisplay = true
         needsLayout = true
     }
@@ -104,6 +115,13 @@ final class PlayerContainerView: NSView {
             let y = bounds.midY - height / 2
             return CGRect(x: bounds.minX, y: y, width: bounds.width, height: height).integral
         }
+    }
+
+    private func viewModelSettings(from overlayProvider: PlayerOverlayProviding) -> EffectSettings {
+        if let viewModel = overlayProvider as? PlayerViewModel {
+            return viewModel.effectSettings
+        }
+        return .default
     }
 }
 

@@ -190,6 +190,17 @@ struct ContentView: View {
             }
 
             Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 12) {
+                GridRow {
+                    Text("Bars enabled")
+                    Toggle("", isOn: Binding(
+                        get: { viewModel.effectSettings.barsEnabled },
+                        set: { viewModel.effectSettings.barsEnabled = $0 }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    Spacer()
+                }
+
                 gridRow(
                     title: "Depth cutoff",
                     value: viewModel.effectSettings.depthCutoff,
@@ -207,6 +218,48 @@ struct ContentView: View {
                     binding: Binding(
                         get: { viewModel.effectSettings.borderThickness },
                         set: { viewModel.effectSettings.borderThickness = $0 }
+                    )
+                )
+
+                GridRow {
+                    Text("Vertical bars")
+                    Toggle("", isOn: Binding(
+                        get: { viewModel.effectSettings.verticalBarsEnabled },
+                        set: { viewModel.effectSettings.verticalBarsEnabled = $0 }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    Spacer()
+                }
+
+                gridRow(
+                    title: "Vertical width",
+                    value: viewModel.effectSettings.verticalBarThickness,
+                    range: 0.01...0.12,
+                    binding: Binding(
+                        get: { viewModel.effectSettings.verticalBarThickness },
+                        set: { viewModel.effectSettings.verticalBarThickness = $0 }
+                    )
+                )
+
+                GridRow {
+                    Text("Horizontal bars")
+                    Toggle("", isOn: Binding(
+                        get: { viewModel.effectSettings.horizontalBarsEnabled },
+                        set: { viewModel.effectSettings.horizontalBarsEnabled = $0 }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    Spacer()
+                }
+
+                gridRow(
+                    title: "Horizontal height",
+                    value: viewModel.effectSettings.horizontalBarThickness,
+                    range: 0.01...0.12,
+                    binding: Binding(
+                        get: { viewModel.effectSettings.horizontalBarThickness },
+                        set: { viewModel.effectSettings.horizontalBarThickness = $0 }
                     )
                 )
 
