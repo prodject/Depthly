@@ -19,10 +19,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     let player = AVPlayer()
 
     private let frameProvider = AVPlayerItemFrameProvider()
-    private let mockEstimator = MockDepthEstimator()
-    private let visionProvider = VisionPersonSegmentationProvider()
-    private let maskFusion = MaskFusion()
-    private let temporalSmoother = TemporalMaskSmoother()
+    private let foregroundMaskProvider: ForegroundMaskProviding = MockForegroundMaskProvider()
     private let renderer = SplitDepthRenderer()
     private let airPlayCoordinator = AirPlayCoordinator()
 
@@ -128,26 +125,13 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
 
     private func processFrame(pixelBuffer: CVPixelBuffer, timestamp: CMTime, duration: Double) async {
         do {
-            let depthMask = try await mockEstimator.estimateMask(from: pixelBuffer, timestamp: timestamp)
-            let visionMask = try? await visionProvider.makeMask(from: pixelBuffer)
-            let fusedMask = try maskFusion.fuse(depthMask: depthMask, visionMask: visionMask, cutoff: effectSettings.depthCutoff, effectStrength: effectSettings.effectStrength)
-            let thresholded = try fusedMask.map { try maskFusion.applyDepthCutoff($0, cutoff: effectSettings.depthCutoff) }
-            let smoothed = try thresholded.map { try temporalSmoother.smooth($0, factor: effectSettings.temporalSmoothing) }
-
-            if let smoothed {
-                let cgImage = try renderer.renderOverlay(frameBuffer: pixelBuffer, foregroundMask: smoothed.pixelBuffer, settings: effectSettings)
-                let image = NSImage(cgImage: cgImage, size: .zero)
-                await MainActor.run {
-                    self.overlayImage = image
-                    self.currentTime = timestamp.seconds
-                    self.duration = duration.isFinite ? duration : self.duration
-                }
-            } else {
-                let cgImage = try renderer.renderOverlay(frameBuffer: pixelBuffer, foregroundMask: nil, settings: effectSettings)
-                let image = NSImage(cgImage: cgImage, size: .zero)
-                await MainActor.run {
-                    self.overlayImage = image
-                }
+            let foregroundMask = try await foregroundMaskProvider.makeForegroundMask(from: pixelBuffer, timestamp: timestamp)
+            let cgImage = try renderer.renderOverlay(frameBuffer: pixelBuffer, foregroundMask: foregroundMask.pixelBuffer, settings: effectSettings)
+            let image = NSImage(cgImage: cgImage, size: .zero)
+            await MainActor.run {
+                self.overlayImage = image
+                self.currentTime = timestamp.seconds
+                self.duration = duration.isFinite ? duration : self.duration
             }
         } catch {
             await MainActor.run {
