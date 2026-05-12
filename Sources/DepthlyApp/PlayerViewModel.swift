@@ -76,17 +76,24 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
 
         player.replaceCurrentItem(with: item)
         player.volume = Float(volume)
-        player.play()
-
+        player.pause()
         statusMessage = url.lastPathComponent
-        refreshDuration()
+
+        Task { [weak self] in
+            guard let self else { return }
+            await self.startPlaybackAfterLoad()
+        }
     }
 
     func togglePlayback() {
         if isPlaying {
             player.pause()
         } else {
-            player.play()
+            if effectSettings.isEnabled {
+                bufferPlayback(resumeAfterBuffer: true)
+            } else {
+                player.play()
+            }
         }
     }
 
@@ -178,12 +185,11 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
         }
     }
 
-    func bufferPlayback() {
+    func bufferPlayback(resumeAfterBuffer: Bool = true) {
         guard !isBuffering, let url = currentVideoURL, duration > 0 else {
             return
         }
 
-        let shouldResume = isPlaying
         player.pause()
         isBuffering = true
         bufferProgress = 0
@@ -206,7 +212,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
                     self.isBuffering = false
                     self.bufferProgress = 1.0
                     self.statusMessage = "Buffer ready"
-                    if shouldResume {
+                    if resumeAfterBuffer {
                         self.player.play()
                     }
                 }
@@ -214,7 +220,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
                 await MainActor.run {
                     self.isBuffering = false
                     self.statusMessage = "Buffering failed: \(error.localizedDescription)"
-                    if shouldResume {
+                    if resumeAfterBuffer {
                         self.player.play()
                     }
                 }
@@ -435,23 +441,37 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
             player.observe(\.currentItem, options: [.initial, .new]) { [weak self] _, _ in
                 Task { @MainActor in
                     self?.temporalSmoother.reset()
-                    self?.refreshDuration()
+                    await self?.refreshDuration()
                 }
             }
         )
     }
 
-    private func refreshDuration() {
+    private func refreshDuration() async {
         guard let asset = player.currentItem?.asset else {
             duration = 0
             return
         }
 
-        Task {
-            let loadedDuration = try? await asset.load(.duration)
-            await MainActor.run {
-                self.duration = loadedDuration?.seconds ?? 0
-            }
+        let loadedDuration = try? await asset.load(.duration)
+        await MainActor.run {
+            self.duration = loadedDuration?.seconds ?? 0
+        }
+    }
+
+    private func startPlaybackAfterLoad() async {
+        await refreshDuration()
+
+        guard duration > 0 else {
+            statusMessage = currentVideoURL?.lastPathComponent ?? "Ready"
+            return
+        }
+
+        if effectSettings.isEnabled {
+            bufferPlayback(resumeAfterBuffer: true)
+        } else {
+            statusMessage = currentVideoURL?.lastPathComponent ?? "Ready"
+            player.play()
         }
     }
 }
