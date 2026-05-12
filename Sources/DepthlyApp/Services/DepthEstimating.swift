@@ -3,7 +3,7 @@ import CoreVideo
 import Foundation
 
 protocol DepthEstimating {
-    func estimateMask(from pixelBuffer: CVPixelBuffer, timestamp: CMTime) async throws -> DepthMask
+    func estimateDepth(from pixelBuffer: CVPixelBuffer, timestamp: CMTime) async throws -> DepthMap
 }
 
 enum DepthEstimatorError: Error {

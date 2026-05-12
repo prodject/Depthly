@@ -19,6 +19,7 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     let player = AVPlayer()
 
     private let frameProvider = AVPlayerItemFrameProvider()
+    private let depthEstimator: DepthEstimating = AdaptiveDepthEstimator()
     private let foregroundMaskProvider: ForegroundMaskProviding = AdaptiveForegroundMaskProvider()
     private let renderer = SplitDepthRenderer()
     private let airPlayCoordinator = AirPlayCoordinator()
