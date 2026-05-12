@@ -21,6 +21,8 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
     private let frameProvider = AVPlayerItemFrameProvider()
     private let depthEstimator: DepthEstimating = AdaptiveDepthEstimator()
     private let foregroundMaskProvider: ForegroundMaskProviding = AdaptiveForegroundMaskProvider()
+    private let maskFusion = MaskFusion()
+    private let temporalSmoother = TemporalMaskSmoother()
     private let renderer = SplitDepthRenderer()
     private let airPlayCoordinator = AirPlayCoordinator()
 
@@ -126,8 +128,25 @@ final class PlayerViewModel: ObservableObject, PlayerOverlayProviding {
 
     private func processFrame(pixelBuffer: CVPixelBuffer, timestamp: CMTime, duration: Double) async {
         do {
-            let foregroundMask = try await foregroundMaskProvider.makeForegroundMask(from: pixelBuffer, timestamp: timestamp)
-            let cgImage = try renderer.renderOverlay(frameBuffer: pixelBuffer, foregroundMask: foregroundMask.pixelBuffer, settings: effectSettings)
+            async let depthTask = depthEstimator.estimateDepth(from: pixelBuffer, timestamp: timestamp)
+            async let foregroundTask = foregroundMaskProvider.makeForegroundMask(from: pixelBuffer, timestamp: timestamp)
+
+            let depthMap = try? await depthTask
+            let foregroundMask = try? await foregroundTask
+
+            let fusedMask = try maskFusion.fuse(
+                depthMap: depthMap,
+                foregroundMask: foregroundMask,
+                cutoff: effectSettings.depthCutoff,
+                effectStrength: effectSettings.effectStrength
+            )
+
+            let smoothedMask = try fusedMask.map { try temporalSmoother.smooth($0, factor: effectSettings.temporalSmoothing) }
+            let cgImage = try renderer.renderOverlay(
+                frameBuffer: pixelBuffer,
+                foregroundMask: smoothedMask?.pixelBuffer,
+                settings: effectSettings
+            )
             let image = NSImage(cgImage: cgImage, size: .zero)
             await MainActor.run {
                 self.overlayImage = image

@@ -1,28 +1,36 @@
+import CoreMedia
 import CoreVideo
 import Foundation
 
 final class TemporalMaskSmoother {
-    private var previousMask: CVPixelBuffer?
+    private var previousMask: ForegroundMask?
 
-    func smooth(_ mask: DepthMask, factor: Double) throws -> DepthMask {
-        defer { previousMask = mask.pixelBuffer }
+    func smooth(_ mask: ForegroundMask, factor: Double) throws -> ForegroundMask {
+        defer { previousMask = mask }
 
         guard let previousMask else {
             return mask
         }
 
+        guard
+            CVPixelBufferGetWidth(previousMask.pixelBuffer) == CVPixelBufferGetWidth(mask.pixelBuffer),
+            CVPixelBufferGetHeight(previousMask.pixelBuffer) == CVPixelBufferGetHeight(mask.pixelBuffer)
+        else {
+            return mask
+        }
+
         let result = try makePixelBufferLike(mask.pixelBuffer)
-        CVPixelBufferLockBaseAddress(previousMask, .readOnly)
+        CVPixelBufferLockBaseAddress(previousMask.pixelBuffer, .readOnly)
         CVPixelBufferLockBaseAddress(mask.pixelBuffer, .readOnly)
         CVPixelBufferLockBaseAddress(result, [])
         defer {
             CVPixelBufferUnlockBaseAddress(result, [])
             CVPixelBufferUnlockBaseAddress(mask.pixelBuffer, .readOnly)
-            CVPixelBufferUnlockBaseAddress(previousMask, .readOnly)
+            CVPixelBufferUnlockBaseAddress(previousMask.pixelBuffer, .readOnly)
         }
 
         guard
-            let previousBase = CVPixelBufferGetBaseAddress(previousMask),
+            let previousBase = CVPixelBufferGetBaseAddress(previousMask.pixelBuffer),
             let currentBase = CVPixelBufferGetBaseAddress(mask.pixelBuffer),
             let resultBase = CVPixelBufferGetBaseAddress(result)
         else {
@@ -35,7 +43,7 @@ final class TemporalMaskSmoother {
 
         let width = CVPixelBufferGetWidth(mask.pixelBuffer)
         let height = CVPixelBufferGetHeight(mask.pixelBuffer)
-        let previousBytesPerRow = CVPixelBufferGetBytesPerRow(previousMask)
+        let previousBytesPerRow = CVPixelBufferGetBytesPerRow(previousMask.pixelBuffer)
         let currentBytesPerRow = CVPixelBufferGetBytesPerRow(mask.pixelBuffer)
         let resultBytesPerRow = CVPixelBufferGetBytesPerRow(result)
         let alpha = max(0.0, min(1.0, factor))
@@ -49,7 +57,11 @@ final class TemporalMaskSmoother {
             }
         }
 
-        return DepthMask(pixelBuffer: result, confidence: mask.confidence, timestamp: mask.timestamp)
+        return ForegroundMask(
+            pixelBuffer: result,
+            confidence: max(previousMask.confidence, mask.confidence),
+            timestamp: mask.timestamp
+        )
     }
 
     private func makePixelBufferLike(_ source: CVPixelBuffer) throws -> CVPixelBuffer {
